@@ -1,4 +1,4 @@
-package tcp
+package handler
 
 import (
 	"Redis_Go/lib/logger"
@@ -25,8 +25,7 @@ type EchoClient struct {
 	Waiting wait.Wait
 }
 
-// 工厂模式
-func GetHandler() *EchoHandler {
+func GetEchoHandler() *EchoHandler {
 	return &EchoHandler{}
 }
 

@@ -3,8 +3,8 @@ package main
 import (
 	"Redis_Go/config"
 	"Redis_Go/lib/logger"
+	"Redis_Go/resp/handler"
 	"Redis_Go/tcp"
-	EchoHandler "Redis_Go/tcp"
 	"fmt"
 	"os"
 )
@@ -33,7 +33,7 @@ func main() {
 				config.Properties.Bind,
 				config.Properties.Port),
 		},
-		EchoHandler.GetHandler())
+		handler.GetHandler())
 
 	if err != nil {
 		logger.Error(err)
