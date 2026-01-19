@@ -99,6 +99,6 @@ func GetStatusReply(status string) *StatusReply {
 	}
 }
 
-func isErrReply(reply resp.Reply) bool {
+func IsErrReply(reply resp.Reply) bool {
 	return reply.ToBytes()[0] == '-'
 }

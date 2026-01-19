@@ -11,15 +11,15 @@ import (
 )
 
 type ServerProperties struct {
-	Bind           string   `cfg:"bind"`
-	Port           int      `cfg:"port"`
-	AppendOnly     bool     `cfg:"appendOnly"`
-	AppendFilename string   `cfg:"appendFilename"`
-	MaxClients     int      `cfg:"maxClients"`
-	RequirePass    string   `cfg:"requirePass"`
-	Databases      int      `cfg:"databases"`
-	Peers          []string `cfg:"peers"`
-	Self           string   `cfg:"self"`
+	Bind               string   `cfg:"bind"`
+	Port               int      `cfg:"port"`
+	AppendOnly         bool     `cfg:"appendOnly"`
+	AppendOnlyFilename string   `cfg:"appendOnlyFilename"`
+	MaxClients         int      `cfg:"maxClients"`
+	RequirePass        string   `cfg:"requirePass"`
+	Databases          int      `cfg:"databases"`
+	Peers              []string `cfg:"peers"`
+	Self               string   `cfg:"self"`
 }
 
 var Properties *ServerProperties
@@ -88,7 +88,7 @@ func parse(src io.Reader) *ServerProperties {
 					fieldVal.SetInt(intValue)
 				}
 			case reflect.Bool:
-				boolValue := "yes" == value
+				boolValue := "yes" == value || "true" == value
 				fieldVal.SetBool(boolValue)
 			case reflect.Slice:
 				if field.Type.Elem().Kind() == reflect.String {

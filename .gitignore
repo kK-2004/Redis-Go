@@ -34,3 +34,6 @@ go.work.sum
 logs
 
 **/.claude
+CLAUDE.md
+
+*.aof

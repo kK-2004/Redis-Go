@@ -13,12 +13,14 @@ type Connection struct {
 	conn         net.Conn
 	waitingReply wait.Wait
 	mu           sync.Mutex
-	seletedDB    int
+	selectedDB   int
+	dbSelected   bool // 是否已显式选择数据库
 }
 
 func NewConnection(conn net.Conn) *Connection {
 	return &Connection{
-		conn: conn,
+		conn:       conn,
+		dbSelected: false, // 初始状态为未选择数据库
 	}
 }
 
@@ -48,9 +50,18 @@ func (c *Connection) Write(b []byte) error {
 }
 
 func (c *Connection) GetDBIndex() int {
-	return c.seletedDB
+	return c.selectedDB
 }
 
 func (c *Connection) SelectDB(index int) {
-	c.seletedDB = index
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.selectedDB = index
+	c.dbSelected = true // 标记为已选择数据库
+}
+
+func (c *Connection) GetDBSelected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dbSelected
 }

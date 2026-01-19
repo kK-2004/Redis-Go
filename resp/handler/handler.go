@@ -23,8 +23,14 @@ type RespHandler struct {
 	closing    atomic.Bool
 }
 
-func GetRespHandler() *RespHandler {
-	db := database.NewEchoDatabase()
+func GetRespHandler(use_db string) *RespHandler {
+	var db databaseface.Database
+	switch use_db {
+	case "db":
+		db = database.CreateDatabases()
+	default:
+		db = database.CreateDatabases("echo_database")
+	}
 	return &RespHandler{
 		db: db,
 	}
