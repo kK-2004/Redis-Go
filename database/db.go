@@ -18,15 +18,17 @@ type DB struct {
 	lockMgr *KeyLockManager
 }
 
-func NewDB(index ...int) *DB {
+func NewDB(dbIndex ...int) *DB {
+	idx := 0
+	if len(dbIndex) > 0 {
+		idx = dbIndex[0]
+	}
+
 	return &DB{
-		index: 0,
+		index: idx,
 		data:  dict.GetSyncDict(),
 		addAof: func(line CmdLine) {
-			// No-op by default,
-			// can be overridden by the database instance
 		},
-		lockMgr: NewKeyLockManager(),
 	}
 }
 
