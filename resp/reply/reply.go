@@ -3,6 +3,7 @@ package reply
 import (
 	"Redis_Go/interface/resp"
 	"bytes"
+	"fmt"
 	"strconv"
 )
 
@@ -23,13 +24,7 @@ func (r *BulkReply) ToBytes() []byte {
 	if r.Arg == nil {
 		return GetNullBulkReply().ToBytes()
 	}
-	buf := make([]byte, 0, len(r.Arg)+16)
-	buf = append(buf, '$')
-	buf = strconv.AppendInt(buf, int64(len(r.Arg)), 10)
-	buf = append(buf, '\r', '\n')
-	buf = append(buf, r.Arg...)
-	buf = append(buf, '\r', '\n')
-	return buf
+	return []byte("$" + strconv.Itoa(len(r.Arg)) + CRLF + string(r.Arg) + CRLF)
 }
 
 func GetBulkReply(arg []byte) *BulkReply {
@@ -43,21 +38,14 @@ type MultiBulkReply struct {
 }
 
 func (r *MultiBulkReply) ToBytes() []byte {
+	argLen := len(r.Args)
 	var buf bytes.Buffer
-	buf.Grow(16 + len(r.Args)*16)
-	buf.WriteByte('*')
-	buf.WriteString(strconv.Itoa(len(r.Args)))
-	buf.WriteString(CRLF)
+	buf.WriteString("*" + strconv.Itoa(argLen) + CRLF)
 	for _, arg := range r.Args {
 		if arg == nil {
-			buf.WriteString("$-1")
-			buf.WriteString(CRLF)
+			buf.WriteString(string(GetNullBulkReply().ToBytes()))
 		} else {
-			buf.WriteByte('$')
-			buf.WriteString(strconv.Itoa(len(arg)))
-			buf.WriteString(CRLF)
-			buf.Write(arg)
-			buf.WriteString(CRLF)
+			buf.WriteString(string(GetBulkReply(arg).ToBytes()))
 		}
 	}
 	return buf.Bytes()
@@ -88,11 +76,7 @@ type IntReply struct {
 }
 
 func (r *IntReply) ToBytes() []byte {
-	buf := make([]byte, 0, 24)
-	buf = append(buf, ':')
-	buf = strconv.AppendInt(buf, r.Code, 10)
-	buf = append(buf, '\r', '\n')
-	return buf
+	return []byte(":" + strconv.FormatInt(r.Code, 10) + CRLF)
 }
 
 func GetIntReply(code int64) *IntReply {
@@ -117,13 +101,7 @@ func GetStatusReply(status string) *StatusReply {
 }
 
 func IsErrReply(reply resp.Reply) bool {
-	switch reply.(type) {
-	case *StandardErrorReply, *ArgNumErrReply, *UnknownReply, *SyntaxErrReply, *WrongTypeErrReply, *ProtocolErrReply, *MovedReply:
-		return true
-	default:
-		raw := reply.ToBytes()
-		return len(raw) > 0 && raw[0] == '-'
-	}
+	return reply.ToBytes()[0] == '-'
 }
 
 // MovedReply 表示键已移动到另一个节点的重定向响应
@@ -134,17 +112,11 @@ type MovedReply struct {
 }
 
 func (r *MovedReply) ToBytes() []byte {
-	buf := make([]byte, 0, len(r.Addr)+24)
-	buf = append(buf, '-', 'M', 'O', 'V', 'E', 'D', ' ')
-	buf = strconv.AppendInt(buf, int64(r.Slot), 10)
-	buf = append(buf, ' ')
-	buf = append(buf, r.Addr...)
-	buf = append(buf, '\r', '\n')
-	return buf
+	return []byte(fmt.Sprintf("-MOVED %d %s\r\n", r.Slot, r.Addr))
 }
 
 func (r *MovedReply) Error() string {
-	return "MOVED " + strconv.Itoa(r.Slot) + " " + r.Addr
+	return fmt.Sprintf("MOVED %d %s", r.Slot, r.Addr)
 }
 
 func MakeMovedReply(slot int, addr string) *MovedReply {

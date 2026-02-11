@@ -27,10 +27,9 @@ var Properties *ServerProperties
 
 func init() {
 	Properties = &ServerProperties{
-		Bind:               "127.0.0.1",
-		Port:               6666,
-		AppendOnly:         false,
-		AppendOnlyFilename: "dump.aof",
+		Bind:       "127.0.0.1",
+		Port:       6666,
+		AppendOnly: false,
 	}
 }
 

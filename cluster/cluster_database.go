@@ -64,13 +64,19 @@ func (c *ClusterDatabase) Exec(client resp.Connection, args [][]byte) resp.Reply
 	// Use consistent hash to pick target node
 	targetNode := c.peerPicker.PickNode(key)
 
+	// Debug: show all nodes for this key
+	slot := c.getSlot(key)
+	logger.Infof("key=%s, slot=%d, self=%s, targetNode=%s, nodes=%v",
+		key, slot, c.self, targetNode, c.nodes)
+
 	if targetNode == c.self {
 		// Local node handles the command
 		return c.db.Exec(client, args)
 	}
 
 	// Remote node: return MOVED redirection
-	slot := c.getSlot(key)
+	slot = c.getSlot(key)
+	logger.Infof("Redirecting %s to %s for key %s", cmdName, targetNode, key)
 	return reply.MakeMovedReply(slot, targetNode)
 }
 

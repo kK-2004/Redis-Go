@@ -209,15 +209,6 @@ func parseSingleLineReply(msg []byte) (resp.Reply, error) {
 			return nil, errors.New("protocol error: " + string(msg))
 		}
 		result = reply.GetIntReply(val)
-	default: // inline reply
-		parts := strings.Fields(str)
-		if len(parts) != 0 {
-			args := make([][]byte, len(parts))
-			for i, p := range parts {
-				args[i] = []byte(p)
-			}
-			result = reply.GetMultiBulkReply(args)
-		}
 	}
 	return result, nil
 }
