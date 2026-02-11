@@ -27,42 +27,36 @@ func execZAdd(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	var result resp.Reply
-	db.WithKeyLock(key, func() {
-		// Get or create ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if exists && zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
+	// Get or create ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if exists && zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
+
+	added := 0
+	for i := 1; i < len(args); i += 2 {
+		scoreStr := string(args[i])
+		member := string(args[i+1])
+
+		// Parse score
+		score, err := parseFloat(scoreStr)
+		if err != nil {
+			return err
 		}
 
-		added := 0
-		for i := 1; i < len(args); i += 2 {
-			scoreStr := string(args[i])
-			member := string(args[i+1])
-
-			// Parse score
-			score, err := parseFloat(scoreStr)
-			if err != nil {
-				result = err
-				return
-			}
-
-			// Add member to ZSet
-			if zsetObj.Add(member, score) {
-				added++
-			}
+		// Add member to ZSet
+		if zsetObj.Add(member, score) {
+			added++
 		}
+	}
 
-		// Store ZSet in database
-		db.PutEntity(key, &database.DataEntity{Data: zsetObj})
+	// Store ZSet in database
+	db.PutEntity(key, &database.DataEntity{Data: zsetObj})
 
-		// Add AOF record
-		db.addAof(utils.ToCmdLineWithName("ZADD", args...))
+	// Add AOF record
+	db.addAof(utils.ToCmdLineWithName("ZADD", args...))
 
-		result = reply.GetIntReply(int64(added))
-	})
-	return result
+	return reply.GetIntReply(int64(added))
 }
 
 // execZScore implements the ZSCORE command
@@ -75,29 +69,22 @@ func execZScore(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	member := string(args[1])
 
-	var result resp.Reply
-	db.WithRKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetNullBulkReply()
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetNullBulkReply()
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		// Get score
-		score, exists := zsetObj.Score(member)
-		if !exists {
-			result = reply.GetNullBulkReply()
-			return
-		}
+	// Get score
+	score, exists := zsetObj.Score(member)
+	if !exists {
+		return reply.GetNullBulkReply()
+	}
 
-		result = reply.GetBulkReply([]byte(strconv.FormatFloat(score, 'f', -1, 64)))
-	})
-	return result
+	return reply.GetBulkReply([]byte(strconv.FormatFloat(score, 'f', -1, 64)))
 }
 
 // execZCard implements the ZCARD command
@@ -109,22 +96,16 @@ func execZCard(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	var result resp.Reply
-	db.WithRKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetIntReply(0)
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetIntReply(0)
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		result = reply.GetIntReply(int64(zsetObj.Len()))
-	})
-	return result
+	return reply.GetIntReply(int64(zsetObj.Len()))
 }
 
 // execZRange implements the ZRANGE command
@@ -152,40 +133,34 @@ func execZRange(db *DB, args [][]byte) resp.Reply {
 		return reply.GetStandardErrorReply("value is not an integer or out of range")
 	}
 
-	var result resp.Reply
-	db.WithRKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetEmptyMultiBulkReply()
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetEmptyMultiBulkReply()
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		// Get range
-		members := zsetObj.RangeByRank(start, stop)
+	// Get range
+	members := zsetObj.RangeByRank(start, stop)
 
-		// Prepare result
-		if !withScores {
-			arr := make([][]byte, len(members))
-			for i, member := range members {
-				arr[i] = []byte(member)
-			}
-			result = reply.GetMultiBulkReply(arr)
-		} else {
-			arr := make([][]byte, len(members)*2)
-			for i, member := range members {
-				arr[i*2] = []byte(member)
-				score, _ := zsetObj.Score(member)
-				arr[i*2+1] = []byte(strconv.FormatFloat(score, 'f', -1, 64))
-			}
-			result = reply.GetMultiBulkReply(arr)
+	// Prepare result
+	if !withScores {
+		result := make([][]byte, len(members))
+		for i, member := range members {
+			result[i] = []byte(member)
 		}
-	})
-	return result
+		return reply.GetMultiBulkReply(result)
+	} else {
+		result := make([][]byte, len(members)*2)
+		for i, member := range members {
+			result[i*2] = []byte(member)
+			score, _ := zsetObj.Score(member)
+			result[i*2+1] = []byte(strconv.FormatFloat(score, 'f', -1, 64))
+		}
+		return reply.GetMultiBulkReply(result)
+	}
 }
 
 // execZRem implements the ZREM command
@@ -197,39 +172,33 @@ func execZRem(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	var result resp.Reply
-	db.WithKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetIntReply(0)
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetIntReply(0)
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		// Remove members
-		removed := 0
-		for i := 1; i < len(args); i++ {
-			member := string(args[i])
-			if zsetObj.Remove(member) {
-				removed++
-			}
+	// Remove members
+	removed := 0
+	for i := 1; i < len(args); i++ {
+		member := string(args[i])
+		if zsetObj.Remove(member) {
+			removed++
 		}
+	}
 
-		// Update database if we removed anything
-		if removed > 0 {
-			db.PutEntity(key, &database.DataEntity{Data: zsetObj})
+	// Update database if we removed anything
+	if removed > 0 {
+		db.PutEntity(key, &database.DataEntity{Data: zsetObj})
 
-			// Add AOF record
-			db.addAof(utils.ToCmdLineWithName("ZREM", args...))
-		}
+		// Add AOF record
+		db.addAof(utils.ToCmdLineWithName("ZREM", args...))
+	}
 
-		result = reply.GetIntReply(int64(removed))
-	})
-	return result
+	return reply.GetIntReply(int64(removed))
 }
 
 // execZCount implements the ZCOUNT command
@@ -252,25 +221,19 @@ func execZCount(db *DB, args [][]byte) resp.Reply {
 		return err
 	}
 
-	var result resp.Reply
-	db.WithRKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetIntReply(0)
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetIntReply(0)
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		// Count elements in range
-		count := zsetObj.Count(min, max)
+	// Count elements in range
+	count := zsetObj.Count(min, max)
 
-		result = reply.GetIntReply(int64(count))
-	})
-	return result
+	return reply.GetIntReply(int64(count))
 }
 
 // execZRank implements the ZRANK command
@@ -283,50 +246,43 @@ func execZRank(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	member := string(args[1])
 
-	var result resp.Reply
-	db.WithRKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetNullBulkReply()
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetNullBulkReply()
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		// Get member's rank
-		score, exists := zsetObj.Score(member)
-		if !exists {
-			result = reply.GetNullBulkReply()
-			return
-		}
+	// Get member's rank
+	score, exists := zsetObj.Score(member)
+	if !exists {
+		return reply.GetNullBulkReply()
+	}
 
-		// Using skiplist's GetRank method
-		rank := -1
-		if zsetObj.Encoding() == 1 { // Using skiplist encoding
-			// We need to access the skiplist from the ZSet implementation
-			skiplist := zsetObj.GetSkiplist()
-			rank = skiplist.GetRank(member, score)
-		} else {
-			// For listpack encoding, we need to compute rank by sorting
-			members := zsetObj.RangeByRank(0, -1)
-			for i, m := range members {
-				if m == member {
-					rank = i
-					break
-				}
+	// Using skiplist's GetRank method
+	rank := -1
+	if zsetObj.Encoding() == 1 { // Using skiplist encoding
+		// We need to access the skiplist from the ZSet implementation
+		skiplist := zsetObj.GetSkiplist()
+		rank = skiplist.GetRank(member, score)
+	} else {
+		// For listpack encoding, we need to compute rank by sorting
+		members := zsetObj.RangeByRank(0, -1)
+		for i, m := range members {
+			if m == member {
+				rank = i
+				break
 			}
 		}
+	}
 
-		if rank == -1 {
-			result = reply.GetNullBulkReply()
-		} else {
-			result = reply.GetIntReply(int64(rank))
-		}
-	})
-	return result
+	if rank == -1 {
+		return reply.GetNullBulkReply()
+	}
+
+	return reply.GetIntReply(int64(rank))
 }
 
 // execZTYPE implements the ZTYPE command
@@ -338,22 +294,16 @@ func execZType(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	var result resp.Reply
-	db.WithRKeyLock(key, func() {
-		// Get ZSet
-		zsetObj, exists := getAsZSet(db, key)
-		if !exists {
-			result = reply.GetNullBulkReply()
-			return
-		}
-		if zsetObj == nil {
-			result = reply.GetWrongTypeErrReply()
-			return
-		}
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.GetNullBulkReply()
+	}
+	if zsetObj == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 
-		result = reply.GetIntReply(int64(zsetObj.Encoding()))
-	})
-	return result
+	return reply.GetIntReply(int64(zsetObj.Encoding()))
 }
 
 // Register ZSET commands

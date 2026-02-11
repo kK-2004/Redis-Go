@@ -8,26 +8,30 @@ import (
 	"Redis_Go/interface/resp"
 	"Redis_Go/resp/reply"
 	"strings"
-	"sync"
 )
 
 type DB struct {
-	index   int
-	data    dict.Dict
-	addAof  func(CmdLine)
-	lockMgr *KeyLockManager
+	index  int
+	data   dict.Dict
+	addAof func(CmdLine)
 }
 
-func NewDB(dbIndex ...int) *DB {
-	idx := 0
-	if len(dbIndex) > 0 {
-		idx = dbIndex[0]
-	}
+func NewDB(index ...int) *DB {
+	if len(index) > 0 {
+		return &DB{
+			index: index[0],
+			data:  dict.GetSyncDict(),
+			addAof: func(line CmdLine) {
 
+			},
+		}
+	}
 	return &DB{
-		index: idx,
+		index: 0,
 		data:  dict.GetSyncDict(),
 		addAof: func(line CmdLine) {
+			// No-op by default,
+			// can be overridden by the database instance
 		},
 	}
 }
@@ -84,11 +88,7 @@ func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
 
 // Remove deletes the DataEntity associated with the given key from the database
 func (db *DB) Remove(key string) int {
-	result := db.data.Remove(key)
-	if result > 0 {
-		db.lockMgr.CleanupLock(key)
-	}
-	return result
+	return db.data.Remove(key)
 }
 
 // Removes deletes the DataEntity associated with the given keys from the database
@@ -99,7 +99,6 @@ func (db *DB) Removes(keys ...string) int {
 		result := db.data.Remove(key)
 		if result > 0 {
 			deleted++
-			db.lockMgr.CleanupLock(key)
 		}
 	}
 	return deleted
@@ -108,7 +107,6 @@ func (db *DB) Removes(keys ...string) int {
 // Flush clears the database by removing all DataEntity objects
 func (db *DB) Flush() {
 	db.data.Clear()
-	db.lockMgr.locks = sync.Map{}
 }
 
 // AfterClientClose is called when a client connection is closed
@@ -162,64 +160,4 @@ func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
 	}
 
 	return zsetObj, true
-}
-
-type KeyLockManager struct {
-	locks sync.Map
-}
-
-func NewKeyLockManager() *KeyLockManager {
-	return &KeyLockManager{}
-}
-
-func (klm *KeyLockManager) Lock(key string) *sync.RWMutex {
-	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
-	lock := lockInterface.(*sync.RWMutex)
-	lock.Lock()
-	return lock
-}
-
-func (klm *KeyLockManager) Unlock(lock *sync.RWMutex) {
-	if lock == nil {
-		return
-	}
-	lock.Unlock()
-}
-
-// RLock acquires a read lock for the given key
-func (klm *KeyLockManager) RLock(key string) *sync.RWMutex {
-	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
-	lock := lockInterface.(*sync.RWMutex)
-	lock.RLock()
-	return lock
-}
-
-// RUnlock releases a read lock for the given key
-func (klm *KeyLockManager) RUnlock(lock *sync.RWMutex) {
-	if lock == nil {
-		return
-	}
-	lock.RUnlock()
-}
-
-func (klm *KeyLockManager) CleanupLock(key string) {
-	klm.locks.Delete(key)
-}
-
-func (db *DB) WithKeyLock(key string, fn func()) {
-	lock := db.lockMgr.Lock(key)
-	defer db.lockMgr.Unlock(lock)
-	fn()
-}
-
-func (db *DB) WithRKeyLock(key string, fn func()) {
-	lock := db.lockMgr.RLock(key)
-	defer db.lockMgr.RUnlock(lock)
-	fn()
-}
-
-func (db *DB) WithKeyLockReturn(key string, fn func() interface{}) interface{} {
-	lock := db.lockMgr.Lock(key)
-	defer db.lockMgr.Unlock(lock)
-	return fn()
 }
