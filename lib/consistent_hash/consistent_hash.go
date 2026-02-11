@@ -1,6 +1,7 @@
 package consistent_hash
 
 import (
+	"Redis_Go/lib/logger"
 	"hash/crc32"
 	"sort"
 )
@@ -44,6 +45,8 @@ func (m *NodeMap) PickNode(key string) string {
 	}
 	hash := int(m.hashFunc([]byte(key)))
 	tarHash := binarySearch(m.nodeHashs, hash)
+	logger.Infof("PickNode: key=%s, keyHash=%d, nodeHashs=%v, tarHash=%d, selectedNode=%s",
+		key, hash, m.nodeHashs, tarHash, m.nodeHashMap[m.nodeHashs[tarHash]])
 	// 如果给定键值大于所有节点hash值，则返回第一个节点
 	if tarHash == len(m.nodeHashs)-1 {
 		tarHash = 0

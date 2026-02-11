@@ -51,11 +51,8 @@ func NewAofHandler(db databaseface.Database) (*AofHandler, error) {
 }
 
 func (h *AofHandler) AddAof(dbIndex int, cmdLine cmdLine) {
-	if !config.Properties.AppendOnly {
-		return
-	}
-	if h.aofChan == nil {
-		return
+	if h.aofChan == nil || !config.Properties.AppendOnly {
+		h.aofChan = make(chan *payload, 100)
 	}
 	h.aofChan <- &payload{
 		cmdLine: cmdLine,
