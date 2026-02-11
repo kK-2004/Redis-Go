@@ -29,6 +29,7 @@ func NewDB(dbIndex ...int) *DB {
 		data:  dict.GetSyncDict(),
 		addAof: func(line CmdLine) {
 		},
+		lockMgr: NewKeyLockManager(),
 	}
 }
 
@@ -108,7 +109,7 @@ func (db *DB) Removes(keys ...string) int {
 // Flush clears the database by removing all DataEntity objects
 func (db *DB) Flush() {
 	db.data.Clear()
-	db.lockMgr.locks = sync.Map{}
+	db.lockMgr.CleanupAll()
 }
 
 // AfterClientClose is called when a client connection is closed
@@ -165,45 +166,124 @@ func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
 }
 
 type KeyLockManager struct {
-	locks sync.Map
+	mu    sync.Mutex
+	locks map[string]*keyLockEntry
+}
+
+type keyLockEntry struct {
+	lock            sync.RWMutex
+	refCount        int
+	pendingDeletion bool
+}
+
+type keyLockHandle struct {
+	key   string
+	entry *keyLockEntry
 }
 
 func NewKeyLockManager() *KeyLockManager {
-	return &KeyLockManager{}
+	return &KeyLockManager{
+		locks: make(map[string]*keyLockEntry),
+	}
 }
 
-func (klm *KeyLockManager) Lock(key string) *sync.RWMutex {
-	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
-	lock := lockInterface.(*sync.RWMutex)
-	lock.Lock()
-	return lock
+func (klm *KeyLockManager) acquireEntry(key string) *keyLockEntry {
+	klm.mu.Lock()
+	defer klm.mu.Unlock()
+
+	entry, ok := klm.locks[key]
+	if !ok {
+		entry = &keyLockEntry{}
+		klm.locks[key] = entry
+	}
+	entry.refCount++
+	return entry
 }
 
-func (klm *KeyLockManager) Unlock(lock *sync.RWMutex) {
-	if lock == nil {
+func (klm *KeyLockManager) releaseEntry(key string, entry *keyLockEntry) {
+	if entry == nil {
 		return
 	}
-	lock.Unlock()
+
+	klm.mu.Lock()
+	defer klm.mu.Unlock()
+
+	if entry.refCount > 0 {
+		entry.refCount--
+	}
+
+	if entry.refCount == 0 && entry.pendingDeletion {
+		if current, ok := klm.locks[key]; ok && current == entry {
+			delete(klm.locks, key)
+		}
+	}
+}
+
+func (klm *KeyLockManager) Lock(key string) *keyLockHandle {
+	entry := klm.acquireEntry(key)
+	entry.lock.Lock()
+	return &keyLockHandle{
+		key:   key,
+		entry: entry,
+	}
+}
+
+func (klm *KeyLockManager) Unlock(handle *keyLockHandle) {
+	if handle == nil || handle.entry == nil {
+		return
+	}
+
+	handle.entry.lock.Unlock()
+	klm.releaseEntry(handle.key, handle.entry)
 }
 
 // RLock acquires a read lock for the given key
-func (klm *KeyLockManager) RLock(key string) *sync.RWMutex {
-	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
-	lock := lockInterface.(*sync.RWMutex)
-	lock.RLock()
-	return lock
+func (klm *KeyLockManager) RLock(key string) *keyLockHandle {
+	entry := klm.acquireEntry(key)
+	entry.lock.RLock()
+	return &keyLockHandle{
+		key:   key,
+		entry: entry,
+	}
 }
 
 // RUnlock releases a read lock for the given key
-func (klm *KeyLockManager) RUnlock(lock *sync.RWMutex) {
-	if lock == nil {
+func (klm *KeyLockManager) RUnlock(handle *keyLockHandle) {
+	if handle == nil || handle.entry == nil {
 		return
 	}
-	lock.RUnlock()
+
+	handle.entry.lock.RUnlock()
+	klm.releaseEntry(handle.key, handle.entry)
 }
 
 func (klm *KeyLockManager) CleanupLock(key string) {
-	klm.locks.Delete(key)
+	klm.mu.Lock()
+	defer klm.mu.Unlock()
+
+	entry, ok := klm.locks[key]
+	if !ok {
+		return
+	}
+
+	if entry.refCount == 0 {
+		delete(klm.locks, key)
+		return
+	}
+	entry.pendingDeletion = true
+}
+
+func (klm *KeyLockManager) CleanupAll() {
+	klm.mu.Lock()
+	defer klm.mu.Unlock()
+
+	for key, entry := range klm.locks {
+		if entry.refCount == 0 {
+			delete(klm.locks, key)
+			continue
+		}
+		entry.pendingDeletion = true
+	}
 }
 
 func (db *DB) WithKeyLock(key string, fn func()) {
