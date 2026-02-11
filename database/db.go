@@ -170,31 +170,34 @@ func NewKeyLockManager() *KeyLockManager {
 	return &KeyLockManager{}
 }
 
-func (klm *KeyLockManager) Lock(key string) {
+func (klm *KeyLockManager) Lock(key string) *sync.RWMutex {
 	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
 	lock := lockInterface.(*sync.RWMutex)
 	lock.Lock()
+	return lock
 }
 
-func (klm *KeyLockManager) Unlock(key string) {
-	lockInterface, _ := klm.locks.Load(key)
-	lock := lockInterface.(*sync.RWMutex)
+func (klm *KeyLockManager) Unlock(lock *sync.RWMutex) {
+	if lock == nil {
+		return
+	}
 	lock.Unlock()
 }
 
 // RLock acquires a read lock for the given key
-func (klm *KeyLockManager) RLock(key string) {
+func (klm *KeyLockManager) RLock(key string) *sync.RWMutex {
 	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
 	lock := lockInterface.(*sync.RWMutex)
 	lock.RLock()
+	return lock
 }
 
 // RUnlock releases a read lock for the given key
-func (klm *KeyLockManager) RUnlock(key string) {
-	if lockInterface, ok := klm.locks.Load(key); ok {
-		lock := lockInterface.(*sync.RWMutex)
-		lock.RUnlock()
+func (klm *KeyLockManager) RUnlock(lock *sync.RWMutex) {
+	if lock == nil {
+		return
 	}
+	lock.RUnlock()
 }
 
 func (klm *KeyLockManager) CleanupLock(key string) {
@@ -202,19 +205,19 @@ func (klm *KeyLockManager) CleanupLock(key string) {
 }
 
 func (db *DB) WithKeyLock(key string, fn func()) {
-	db.lockMgr.Lock(key)
-	defer db.lockMgr.Unlock(key)
+	lock := db.lockMgr.Lock(key)
+	defer db.lockMgr.Unlock(lock)
 	fn()
 }
 
 func (db *DB) WithRKeyLock(key string, fn func()) {
-	db.lockMgr.RLock(key)
-	defer db.lockMgr.RUnlock(key)
+	lock := db.lockMgr.RLock(key)
+	defer db.lockMgr.RUnlock(lock)
 	fn()
 }
 
 func (db *DB) WithKeyLockReturn(key string, fn func() interface{}) interface{} {
-	db.lockMgr.Lock(key)
-	defer db.lockMgr.Unlock(key)
+	lock := db.lockMgr.Lock(key)
+	defer db.lockMgr.Unlock(lock)
 	return fn()
 }
