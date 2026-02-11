@@ -1,8 +1,6 @@
 package dict
 
 import (
-	"Redis_Go/interface/database"
-	"Redis_Go/lib/logger"
 	"Redis_Go/lib/sync/wait"
 	"math/rand"
 	"sync"
@@ -46,15 +44,10 @@ func (dict *SyncDict) Get(key string) (val interface{}, exists bool) {
 
 func (dict *SyncDict) Put(key string, val interface{}) (result int) {
 	ok := dict.do(func() {
-		oldV, exists := dict.m.Swap(key, val)
+		_, exists := dict.m.Swap(key, val)
 		if exists {
-			old_entity := oldV.(*database.DataEntity)
-			entity := val.(*database.DataEntity)
-			logger.Infof("key [%s] exists, modified oldV[%v] -> newV[%v]", key, old_entity.Data, entity.Data)
 			result = 0
 		} else {
-			entity := val.(*database.DataEntity)
-			logger.Infof("key [%s] put V[%s]", key, entity.Data)
 			result = 1
 		}
 	})
@@ -89,7 +82,7 @@ func (dict *SyncDict) Put(key string, val interface{}) (result int) {
 //		}
 //	}
 func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
-	ok := dict.do(func() {
+	dict.do(func() {
 		for {
 			old, exists := dict.m.Load(key)
 			if !exists {
@@ -102,10 +95,7 @@ func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
 			}
 		}
 	})
-	if !ok {
-		return 0
-	}
-	return
+	return result
 }
 
 //	func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
@@ -119,22 +109,16 @@ func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
 //		return 1
 //	}
 func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
-	ok := dict.do(func() {
+	dict.do(func() {
 		_, exists := dict.m.LoadOrStore(key, val)
 		if exists {
-			logger.Infof("key %s exists, put failed", key)
 			result = 0
 			return
 		}
 		dict.m.Store(key, val)
-		entity := val.(*database.DataEntity)
-		logger.Infof("key %s put V[%v]", key, entity.Data)
 		result = 1
 	})
-	if !ok {
-		return 0
-	}
-	return
+	return result
 }
 
 //func (dict *SyncDict) Remove(key string) (result int) {
@@ -149,21 +133,16 @@ func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
 //}
 
 func (dict *SyncDict) Remove(key string) (result int) {
-	ok := dict.do(func() {
+	dict.do(func() {
 		_, exists := dict.m.Load(key)
 		if exists {
 			dict.m.Delete(key)
-			logger.Infof("key %s exists, removed", key)
 			result = 1
 			return
 		}
-		logger.Infof("key %s not exists, remove failed", key)
 		result = 0
 	})
-	if !ok {
-		return 0
-	}
-	return
+	return result
 }
 
 //func (dict *SyncDict) Len() int {
@@ -177,15 +156,12 @@ func (dict *SyncDict) Remove(key string) (result int) {
 
 func (dict *SyncDict) Len() int {
 	size := 0
-	ok := dict.do(func() {
+	dict.do(func() {
 		dict.m.Range(func(key, value interface{}) bool {
 			size++
 			return true
 		})
 	})
-	if !ok {
-		return 0
-	}
 	return size
 }
 
@@ -269,10 +245,6 @@ func (dict *SyncDict) RandomDistinctKeys(n int) []string {
 
 func (dict *SyncDict) Clear() {
 	dict.closing.Store(true)
-	overTime := dict.wg.WaitWithTimeout(10 * time.Second)
-	if overTime {
-		logger.Error("Clear timeout: some operations are still running")
-		return
-	}
+	_ = dict.wg.WaitWithTimeout(10 * time.Second)
 	*dict = *GetSyncDict()
 }
