@@ -12,11 +12,14 @@ func execHSet(db *DB, args [][]byte) resp.Reply {
 	field := string(args[1])
 	value := string(args[2])
 
-	hashObj, _ := db.getOrCreateHash(key)
-	result := hashObj.Set(field, value)
+	var result int
+	// 保证线程安全
+	db.WithKeyLock(key, func() {
+		hashObj, _ := db.getOrCreateHash(key)
+		result = hashObj.Set(field, value)
 
-	db.addAof(utils.ToCmdLineWithName("HSET", args...))
-
+		db.addAof(utils.ToCmdLineWithName("HSET", args...))
+	})
 	return reply.GetIntReply(int64(result))
 }
 
@@ -25,17 +28,23 @@ func execHGet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	field := string(args[1])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetNullBulkReply()
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hashObj, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetNullBulkReply()
+			return
+		}
 
-	value, exists := hash.Get(field)
-	if !exists {
-		return reply.GetNullBulkReply()
-	}
+		value, exists := hashObj.Get(field)
+		if !exists {
+			result = reply.GetNullBulkReply()
+			return
+		}
+		result = reply.GetBulkReply([]byte(value))
+	})
 
-	return reply.GetBulkReply([]byte(value))
+	return result
 }
 
 // HExists checks if field exists in hash
@@ -43,134 +52,170 @@ func execHExists(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	field := string(args[1])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetIntReply(0)
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetIntReply(0)
+			return
+		}
 
-	exists = hash.Exists(field)
-	if exists {
-		return reply.GetIntReply(1)
-	}
-	return reply.GetIntReply(0)
+		exists = hash.Exists(field)
+		if exists {
+			result = reply.GetIntReply(1)
+		} else {
+			result = reply.GetIntReply(0)
+		}
+	})
+	return result
 }
 
 // HDel deletes fields from hash
 func execHDel(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetIntReply(0)
-	}
+	var result resp.Reply
+	db.WithKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetIntReply(0)
+			return
+		}
 
-	deleted := 0
-	for _, field := range args[1:] {
-		deleted += hash.Delete(string(field))
-	}
+		deleted := 0
+		for _, field := range args[1:] {
+			deleted += hash.Delete(string(field))
+		}
 
-	if hash.Len() == 0 {
-		db.Remove(key)
-	}
+		if hash.Len() == 0 {
+			db.Remove(key)
+		}
 
-	if deleted > 0 {
-		db.addAof(utils.ToCmdLineWithName("hdel", args...))
-	}
+		if deleted > 0 {
+			db.addAof(utils.ToCmdLineWithName("hdel", args...))
+		}
 
-	return reply.GetIntReply(int64(deleted))
+		result = reply.GetIntReply(int64(deleted))
+	})
+	return result
 }
 
 // HLen returns number of fields in hash
 func execHLen(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetIntReply(0)
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetIntReply(0)
+			return
+		}
 
-	return reply.GetIntReply(int64(hash.Len()))
+		result = reply.GetIntReply(int64(hash.Len()))
+	})
+	return result
 }
 
 // HGetAll returns all fields and values in hash
 func execHGetAll(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetEmptyMultiBulkReply()
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetEmptyMultiBulkReply()
+			return
+		}
 
-	allMap := hash.GetAll()
-	result := make([][]byte, 0, len(allMap)*2)
-	for field, value := range allMap {
-		result = append(result, []byte(field))
-		result = append(result, []byte(value))
-	}
+		allMap := hash.GetAll()
+		arr := make([][]byte, 0, len(allMap)*2)
+		for field, value := range allMap {
+			arr = append(arr, []byte(field))
+			arr = append(arr, []byte(value))
+		}
 
-	return reply.GetMultiBulkReply(result)
+		result = reply.GetMultiBulkReply(arr)
+	})
+	return result
 }
 
 // HKeys returns all fields in hash
 func execHKeys(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetEmptyMultiBulkReply()
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetEmptyMultiBulkReply()
+			return
+		}
 
-	fields := hash.Fields()
-	result := make([][]byte, len(fields))
-	for i, field := range fields {
-		result[i] = []byte(field)
-	}
+		fields := hash.Fields()
+		arr := make([][]byte, len(fields))
+		for i, field := range fields {
+			arr[i] = []byte(field)
+		}
 
-	return reply.GetMultiBulkReply(result)
+		result = reply.GetMultiBulkReply(arr)
+	})
+	return result
 }
 
 // HVals returns all values in hash
 func execHVals(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetEmptyMultiBulkReply()
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetEmptyMultiBulkReply()
+			return
+		}
 
-	values := hash.Values()
-	result := make([][]byte, len(values))
-	for i, value := range values {
-		result[i] = []byte(value)
-	}
+		values := hash.Values()
+		arr := make([][]byte, len(values))
+		for i, value := range values {
+			arr[i] = []byte(value)
+		}
 
-	return reply.GetMultiBulkReply(result)
+		result = reply.GetMultiBulkReply(arr)
+	})
+	return result
 }
 
 // HMGet returns values for multiple fields in hash
 func execHMGet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			results := make([][]byte, len(args)-1)
+			for i := range results {
+				results[i] = nil
+			}
+			result = reply.GetMultiBulkReply(results)
+			return
+		}
+
 		results := make([][]byte, len(args)-1)
-		for i := range results {
-			results[i] = nil
+		for i, field := range args[1:] {
+			value, exists := hash.Get(string(field))
+			if exists {
+				results[i] = []byte(value)
+			} else {
+				results[i] = nil
+			}
 		}
-		return reply.GetMultiBulkReply(results)
-	}
 
-	results := make([][]byte, len(args)-1)
-	for i, field := range args[1:] {
-		value, exists := hash.Get(string(field))
-		if exists {
-			results[i] = []byte(value)
-		} else {
-			results[i] = nil
-		}
-	}
-
-	return reply.GetMultiBulkReply(results)
+		result = reply.GetMultiBulkReply(results)
+	})
+	return result
 }
 
 // HMSet sets multiple fields in hash
@@ -182,17 +227,21 @@ func execHMSet(db *DB, args [][]byte) resp.Reply {
 		return reply.GetStandardErrorReply("ERR wrong number of arguments for 'hmset' command")
 	}
 
-	hash, _ := db.getOrCreateHash(key)
+	var result resp.Reply
+	db.WithKeyLock(key, func() {
+		hash, _ := db.getOrCreateHash(key)
 
-	for i := 1; i < len(args); i += 2 {
-		field := string(args[i])
-		value := string(args[i+1])
-		hash.Set(field, value)
-	}
+		for i := 1; i < len(args); i += 2 {
+			field := string(args[i])
+			value := string(args[i+1])
+			hash.Set(field, value)
+		}
 
-	db.addAof(utils.ToCmdLineWithName("hmset", args...))
+		db.addAof(utils.ToCmdLineWithName("hmset", args...))
 
-	return reply.GetOKReply()
+		result = reply.GetOKReply()
+	})
+	return result
 }
 
 // HEncoding returns the encoding of the hash.
@@ -201,12 +250,17 @@ func execHMSet(db *DB, args [][]byte) resp.Reply {
 func execHEncoding(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.GetNullBulkReply()
-	}
+	var result resp.Reply
+	db.WithRKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.GetNullBulkReply()
+			return
+		}
 
-	return reply.GetIntReply(int64(hash.Encoding()))
+		result = reply.GetIntReply(int64(hash.Encoding()))
+	})
+	return result
 }
 
 // execHSetNX sets field in the hash stored at key to value, only if field does not exist
@@ -216,18 +270,23 @@ func execHSetNX(db *DB, args [][]byte) resp.Reply {
 	field := string(args[1])
 	value := string(args[2])
 
-	hash, _ := db.getOrCreateHash(key)
+	var result resp.Reply
+	db.WithKeyLock(key, func() {
+		hash, _ := db.getOrCreateHash(key)
 
-	_, exists := hash.Get(field)
-	if exists {
-		return reply.GetIntReply(0)
-	}
+		_, exists := hash.Get(field)
+		if exists {
+			result = reply.GetIntReply(0)
+			return
+		}
 
-	hash.Set(field, value)
+		hash.Set(field, value)
 
-	db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
+		db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
 
-	return reply.GetIntReply(1)
+		result = reply.GetIntReply(1)
+	})
+	return result
 }
 
 func init() {
