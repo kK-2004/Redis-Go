@@ -9,18 +9,29 @@ import (
 	"os"
 )
 
-const configFile string = "redis.conf"
-
 func fileExists(filename string) bool {
 	info, err := os.Stat(filename)
 	return err == nil && !info.IsDir()
 }
+
 func main() {
+	// 获取配置文件路径，默认为 redis.conf
+	configFile := "redis.conf"
+	if len(os.Args) > 1 {
+		configFile = os.Args[1]
+	}
+
+	fmt.Printf("Loading config file: %s\n", configFile)
+
+	if !fileExists(configFile) {
+		fmt.Printf("Config file not found: %s\n", configFile)
+		os.Exit(1)
+	}
 	logger.Setup(&logger.Settings{
 		Path:       "logs",
 		Name:       "Redis_Go",
 		Ext:        "log",
-		TimeFormat: "2026-01-17",
+		TimeFormat: "2006-01-02",
 	})
 
 	if fileExists(configFile) {

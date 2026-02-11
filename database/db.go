@@ -2,6 +2,8 @@ package database
 
 import (
 	"Redis_Go/datastruct/dict"
+	"Redis_Go/datastruct/hash"
+	"Redis_Go/datastruct/zset"
 	"Redis_Go/interface/database"
 	"Redis_Go/interface/resp"
 	"Redis_Go/resp/reply"
@@ -115,4 +117,47 @@ func (db *DB) AfterClientClose(c resp.Connection) {
 // Close closes the database and releases resources
 func (db *DB) Close() {
 	db.data.Clear()
+}
+
+// getAsHash returns a hash value stored at key, or nil if it doesn't exist
+func (db *DB) getAsHash(key string) (*hash.Hash, bool) {
+	entity, exists := db.GetEntity(key)
+	if !exists {
+		return nil, false
+	}
+
+	hashObj, ok := entity.Data.(*hash.Hash)
+	if !ok {
+		return nil, true // key exists but not a hash
+	}
+	return hashObj, true
+}
+
+// getOrCreateHash gets or creates a hash
+func (db *DB) getOrCreateHash(key string) (*hash.Hash, bool) {
+	hashObj, exists := db.getAsHash(key)
+	if exists {
+		return hashObj, true
+	}
+
+	// Create a new hash
+	hashObj = hash.MakeHash()
+	db.PutEntity(key, &database.DataEntity{Data: hashObj})
+	return hashObj, false
+}
+
+func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
+	// Get entity from database
+	entity, exists := db.GetEntity(key)
+	if !exists {
+		return zset.NewZSet(), false
+	}
+
+	// Check if entity is a ZSet
+	zsetObj, ok := entity.Data.(zset.ZSet)
+	if !ok {
+		return nil, true // Key exists but is not a ZSet
+	}
+
+	return zsetObj, true
 }

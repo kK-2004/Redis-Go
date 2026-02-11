@@ -20,6 +20,7 @@ type ServerProperties struct {
 	Databases          int      `cfg:"databases"`
 	Peers              []string `cfg:"peers"`
 	Self               string   `cfg:"self"`
+	UseCluster         bool     `cfg:"useCluster"`
 }
 
 var Properties *ServerProperties
@@ -43,6 +44,11 @@ func SetupConfig(configFileName string) {
 		}
 	}(file)
 	Properties = parse(file)
+
+	// If self is not specified in config file, auto-generate from bind:port
+	if Properties.Self == "" {
+		Properties.Self = Properties.Bind + ":" + strconv.Itoa(Properties.Port)
+	}
 }
 
 func parse(src io.Reader) *ServerProperties {

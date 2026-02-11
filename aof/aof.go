@@ -104,7 +104,6 @@ func (h *AofHandler) loadAof() {
 
 	ch := parser.ParseStream(aofFile)
 	fakeConn := &connection.Connection{}
-	// 默认选择数据库 0
 	fakeConn.SelectDB(0)
 
 	for p := range ch {

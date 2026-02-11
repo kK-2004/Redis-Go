@@ -35,5 +35,11 @@ logs
 
 **/.claude
 CLAUDE.md
+*.md
 
 *.aof
+
+docs/
+
+*.conf
+!redis.example.conf

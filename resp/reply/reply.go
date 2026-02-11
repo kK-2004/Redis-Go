@@ -3,6 +3,7 @@ package reply
 import (
 	"Redis_Go/interface/resp"
 	"bytes"
+	"fmt"
 	"strconv"
 )
 
@@ -101,4 +102,23 @@ func GetStatusReply(status string) *StatusReply {
 
 func IsErrReply(reply resp.Reply) bool {
 	return reply.ToBytes()[0] == '-'
+}
+
+// MovedReply 表示键已移动到另一个节点的重定向响应
+// 格式: -MOVED slot targetAddress\r\n
+type MovedReply struct {
+	Slot int
+	Addr string
+}
+
+func (r *MovedReply) ToBytes() []byte {
+	return []byte(fmt.Sprintf("-MOVED %d %s\r\n", r.Slot, r.Addr))
+}
+
+func (r *MovedReply) Error() string {
+	return fmt.Sprintf("MOVED %d %s", r.Slot, r.Addr)
+}
+
+func MakeMovedReply(slot int, addr string) *MovedReply {
+	return &MovedReply{Slot: slot, Addr: addr}
 }

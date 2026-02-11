@@ -1,8 +1,7 @@
 package resp
 
 type Connection interface {
-	Write([]byte) error  // 写入数据
-	GetDBIndex() int     // 获取当前连接数据库索引
-	SelectDB(int)        // 选择数据库
-	GetDBSelected() bool // 检查是否已选择数据库
+	Write([]byte) error // 写入数据
+	GetDBIndex() int    // 获取当前连接数据库索引
+	SelectDB(int)       // 选择数据库
 }

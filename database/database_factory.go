@@ -2,6 +2,7 @@ package database
 
 import (
 	"Redis_Go/aof"
+	"Redis_Go/cluster"
 	"Redis_Go/config"
 	DatabaseInterface "Redis_Go/interface/database"
 	"Redis_Go/interface/resp"
@@ -11,18 +12,37 @@ import (
 	"strings"
 )
 
-// 豁免命令集合（不需要数据库选择的命令）
-var exemptCommands = map[string]bool{
-	"ping":   true,
-	"select": true,
-}
-
 type Database struct {
 	dbSet      []DatabaseInterface.Database
 	aofHandler *aof.AofHandler
 }
 
-func CreateDatabases(args ...string) *Database {
+func CreateDatabases(args ...string) DatabaseInterface.Database {
+	// Cluster mode
+	if config.Properties.UseCluster {
+		logger.Info("Starting in cluster mode")
+		db := NewDB(0)
+		clusterDB := cluster.NewClusterDatabase(db)
+
+		// Initialize AOF for cluster mode
+		if config.Properties.AppendOnly {
+			// Create a wrapper Database for AOF handler
+			wrapper := &Database{
+				dbSet: []DatabaseInterface.Database{db},
+			}
+			aofHandler, err := aof.NewAofHandler(wrapper)
+			if err != nil {
+				panic(err)
+			}
+			// Set addAof callback for the single DB
+			db.addAof = func(line CmdLine) {
+				aofHandler.AddAof(0, line)
+			}
+		}
+		return clusterDB
+	}
+
+	// Standalone mode
 	if config.Properties.Databases <= 0 {
 		config.Properties.Databases = 16
 	}
@@ -88,17 +108,12 @@ func (d *Database) Exec(client resp.Connection, args [][]byte) (result resp.Repl
 	}()
 	cmdName := strings.ToLower(string(args[0]))
 
-	// 处理 SELECT 命令（特殊处理，必须放在验证之前）
+	// 处理 SELECT 命令
 	if cmdName == "select" {
 		if len(args) != 2 {
 			return reply.GetArgNumErrReply("select")
 		}
 		return execSelect(client, d, args[1:])
-	}
-
-	// 验证是否已选择数据库（豁免命令除外）
-	if !client.GetDBSelected() && !exemptCommands[cmdName] {
-		return reply.GetStandardErrorReply("NOSELECT Please select a database first. Use SELECT <db_index>")
 	}
 
 	// 执行命令

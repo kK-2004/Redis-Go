@@ -46,6 +46,6 @@ type NoReply struct {
 func (r *NoReply) ToBytes() []byte {
 	return []byte("")
 }
-func MakeNoReply() *NoReply {
+func GetNoReply() *NoReply {
 	return &NoReply{}
 }
