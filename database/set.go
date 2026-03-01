@@ -350,14 +350,14 @@ func execSMove(db *DB, args [][]byte) resp.Reply {
 		return reply.GetIntReply(0)
 	}
 
-	srcSet.Remove(member)
-	if srcSet.Len() == 0 {
-		db.Remove(srcKey)
-	}
-
 	destSet, _ := db.getOrCreateSet(destKey)
 	if destSet == nil {
 		return reply.GetWrongTypeErrReply()
+	}
+
+	srcSet.Remove(member)
+	if srcSet.Len() == 0 {
+		db.Remove(srcKey)
 	}
 	destSet.Add(member)
 
@@ -381,7 +381,7 @@ func execSUnion(db *DB, args [][]byte) resp.Reply {
 		keys[i] = string(arg)
 	}
 
-	sortedKeys := utils.SortedKeys(keys)
+	sortedKeys := utils.DedupSortedKeys(keys)
 	locks := make([]*KeyLockHandle, len(sortedKeys))
 	for i, key := range sortedKeys {
 		locks[i] = db.lockMgr.RLock(key)
@@ -430,7 +430,7 @@ func execSInter(db *DB, args [][]byte) resp.Reply {
 		keys[i] = string(arg)
 	}
 
-	sortedKeys := utils.SortedKeys(keys)
+	sortedKeys := utils.DedupSortedKeys(keys)
 	locks := make([]*KeyLockHandle, len(sortedKeys))
 	for i, key := range sortedKeys {
 		locks[i] = db.lockMgr.RLock(key)
@@ -481,7 +481,7 @@ func execSDiff(db *DB, args [][]byte) resp.Reply {
 		keys[i] = string(arg)
 	}
 
-	sortedKeys := utils.SortedKeys(keys)
+	sortedKeys := utils.DedupSortedKeys(keys)
 	locks := make([]*KeyLockHandle, len(sortedKeys))
 	for i, key := range sortedKeys {
 		locks[i] = db.lockMgr.RLock(key)
@@ -712,7 +712,10 @@ func execSScan(db *DB, args [][]byte) resp.Reply {
 	}
 
 	key := string(args[0])
-	cursor, _ := strconv.Atoi(string(args[1]))
+	cursor, err := strconv.Atoi(string(args[1]))
+	if err != nil || cursor < 0 {
+		return reply.GetStandardErrorReply("ERR invalid cursor")
+	}
 
 	matchPattern := "*"
 	count := 10
