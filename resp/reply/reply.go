@@ -150,3 +150,55 @@ func (r *MovedReply) Error() string {
 func MakeMovedReply(slot int, addr string) *MovedReply {
 	return &MovedReply{Slot: slot, Addr: addr}
 }
+
+// ScanReply 用于 SCAN/SSCAN/HSCAN/ZSCAN 命令的回复
+// 格式: [cursor, [member1, member2, ...]]
+type ScanReply struct {
+	Cursor  int64
+	Members [][]byte
+}
+
+func (r *ScanReply) ToBytes() []byte {
+	// 外层数组: 2 个元素 (cursor + members array)
+	// *2\r\n
+	// :cursor\r\n
+	// *len(members)\r\n
+	// $len\r\nmember\r\n
+	// ...
+
+	buf := make([]byte, 0, 64+len(r.Members)*32)
+	buf = append(buf, '*')
+	buf = append(buf, strconv.Itoa(2)...)
+	buf = append(buf, '\r', '\n')
+
+	// cursor
+	buf = append(buf, ':')
+	buf = append(buf, strconv.FormatInt(r.Cursor, 10)...)
+	buf = append(buf, '\r', '\n')
+
+	// members array
+	buf = append(buf, '*')
+	buf = append(buf, strconv.Itoa(len(r.Members))...)
+	buf = append(buf, '\r', '\n')
+
+	for _, member := range r.Members {
+		if member == nil {
+			buf = append(buf, '$', '-', '1', '\r', '\n')
+		} else {
+			buf = append(buf, '$')
+			buf = append(buf, strconv.Itoa(len(member))...)
+			buf = append(buf, '\r', '\n')
+			buf = append(buf, member...)
+			buf = append(buf, '\r', '\n')
+		}
+	}
+
+	return buf
+}
+
+func GetScanReply(cursor int64, members [][]byte) *ScanReply {
+	return &ScanReply{
+		Cursor:  cursor,
+		Members: members,
+	}
+}
