@@ -84,23 +84,24 @@ func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
 }
 
 // Remove deletes the DataEntity associated with the given key from the database
+// 注意：调用方必须先持有该 key 的锁
 func (db *DB) Remove(key string) int {
 	result := db.data.Remove(key)
 	if result > 0 {
-		db.lockMgr.CleanupLock(key)
+		db.lockMgr.RemoveLock(key)
 	}
 	return result
 }
 
 // Removes deletes the DataEntity associated with the given keys from the database
+// 注意：调用方必须先持有这些 key 的锁
 func (db *DB) Removes(keys ...string) int {
 	deleted := 0
 	for _, key := range keys {
-		// Use Remove's return value directly to avoid race condition between Get and Remove
 		result := db.data.Remove(key)
 		if result > 0 {
 			deleted++
-			db.lockMgr.CleanupLock(key)
+			db.lockMgr.RemoveLock(key)
 		}
 	}
 	return deleted
@@ -109,7 +110,7 @@ func (db *DB) Removes(keys ...string) int {
 // Flush clears the database by removing all DataEntity objects
 func (db *DB) Flush() {
 	db.data.Clear()
-	db.lockMgr.CleanupAll()
+	db.lockMgr.Clear()
 }
 
 // AfterClientClose is called when a client connection is closed
@@ -165,6 +166,8 @@ func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
 	return zsetObj, true
 }
 
+// KeyLockManager 键级锁管理器
+// 使用 sync.Mutex 保护 map 和 refCount 的原子操作
 type KeyLockManager struct {
 	mu    sync.Mutex
 	locks map[string]*keyLockEntry
@@ -172,11 +175,11 @@ type KeyLockManager struct {
 
 type keyLockEntry struct {
 	lock            sync.RWMutex
-	refCount        int
-	pendingDeletion bool
+	refCount        int  // 正在等待或持有锁的 goroutine 数量
+	pendingDeletion bool // 标记是否待删除
 }
 
-type keyLockHandle struct {
+type KeyLockHandle struct {
 	key   string
 	entry *keyLockEntry
 }
@@ -187,6 +190,7 @@ func NewKeyLockManager() *KeyLockManager {
 	}
 }
 
+// acquireEntry 原子地获取或创建 entry 并增加引用计数
 func (klm *KeyLockManager) acquireEntry(key string) *keyLockEntry {
 	klm.mu.Lock()
 	defer klm.mu.Unlock()
@@ -200,18 +204,14 @@ func (klm *KeyLockManager) acquireEntry(key string) *keyLockEntry {
 	return entry
 }
 
+// releaseEntry 释放引用，如果 refCount=0 且待删除则清理
 func (klm *KeyLockManager) releaseEntry(key string, entry *keyLockEntry) {
-	if entry == nil {
-		return
-	}
-
 	klm.mu.Lock()
 	defer klm.mu.Unlock()
 
 	if entry.refCount > 0 {
 		entry.refCount--
 	}
-
 	if entry.refCount == 0 && entry.pendingDeletion {
 		if current, ok := klm.locks[key]; ok && current == entry {
 			delete(klm.locks, key)
@@ -219,45 +219,41 @@ func (klm *KeyLockManager) releaseEntry(key string, entry *keyLockEntry) {
 	}
 }
 
-func (klm *KeyLockManager) Lock(key string) *keyLockHandle {
+// Lock 获取指定 key 的写锁
+func (klm *KeyLockManager) Lock(key string) *KeyLockHandle {
 	entry := klm.acquireEntry(key)
 	entry.lock.Lock()
-	return &keyLockHandle{
-		key:   key,
-		entry: entry,
-	}
+	return &KeyLockHandle{key: key, entry: entry}
 }
 
-func (klm *KeyLockManager) Unlock(handle *keyLockHandle) {
+// Unlock 释放写锁
+func (klm *KeyLockManager) Unlock(handle *KeyLockHandle) {
 	if handle == nil || handle.entry == nil {
 		return
 	}
-
 	handle.entry.lock.Unlock()
 	klm.releaseEntry(handle.key, handle.entry)
 }
 
-// RLock acquires a read lock for the given key
-func (klm *KeyLockManager) RLock(key string) *keyLockHandle {
+// RLock 获取指定 key 的读锁
+func (klm *KeyLockManager) RLock(key string) *KeyLockHandle {
 	entry := klm.acquireEntry(key)
 	entry.lock.RLock()
-	return &keyLockHandle{
-		key:   key,
-		entry: entry,
-	}
+	return &KeyLockHandle{key: key, entry: entry}
 }
 
-// RUnlock releases a read lock for the given key
-func (klm *KeyLockManager) RUnlock(handle *keyLockHandle) {
+// RUnlock 释放读锁
+func (klm *KeyLockManager) RUnlock(handle *KeyLockHandle) {
 	if handle == nil || handle.entry == nil {
 		return
 	}
-
 	handle.entry.lock.RUnlock()
 	klm.releaseEntry(handle.key, handle.entry)
 }
 
-func (klm *KeyLockManager) CleanupLock(key string) {
+// RemoveLock 标记删除指定 key 的锁（在 key 被删除后调用）
+// 如果 refCount=0 则立即删除，否则标记为待删除，等待所有等待者完成后删除
+func (klm *KeyLockManager) RemoveLock(key string) {
 	klm.mu.Lock()
 	defer klm.mu.Unlock()
 
@@ -265,7 +261,6 @@ func (klm *KeyLockManager) CleanupLock(key string) {
 	if !ok {
 		return
 	}
-
 	if entry.refCount == 0 {
 		delete(klm.locks, key)
 		return
@@ -273,7 +268,8 @@ func (klm *KeyLockManager) CleanupLock(key string) {
 	entry.pendingDeletion = true
 }
 
-func (klm *KeyLockManager) CleanupAll() {
+// Clear 清空所有锁
+func (klm *KeyLockManager) Clear() {
 	klm.mu.Lock()
 	defer klm.mu.Unlock()
 
