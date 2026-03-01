@@ -235,6 +235,23 @@ func execSMove(db *DB, args [][]byte) resp.Reply {
 	destKey := string(args[1])
 	member := string(args[2])
 
+	// Handle same-key case as a no-op (avoids deadlock from double lock on same key)
+	if srcKey == destKey {
+		lock := db.lockMgr.Lock(srcKey)
+		defer db.lockMgr.Unlock(lock)
+
+		srcSet, exists := db.getAsSet(srcKey)
+		if !exists {
+			return reply.GetIntReply(0)
+		}
+
+		if srcSet.Contains(member) {
+			return reply.GetIntReply(1)
+		}
+		return reply.GetIntReply(0)
+	}
+
+	// Different keys - need to lock both to prevent deadlock
 	keys := []string{srcKey, destKey}
 	if srcKey > destKey {
 		keys = []string{destKey, srcKey}
@@ -390,15 +407,19 @@ func execSDiff(db *DB, args [][]byte) resp.Reply {
 		}
 	}()
 
-	sets := make([]*set.Set, 0)
-	for _, key := range keys {
-		if setObj, exists := db.getAsSet(key); exists {
-			sets = append(sets, setObj)
-		}
+	// The first key is the base set for diff - if it doesn't exist, result is empty
+	firstSet, exists := db.getAsSet(keys[0])
+	if !exists {
+		return reply.GetEmptyMultiBulkReply()
 	}
 
-	if len(sets) == 0 {
-		return reply.GetEmptyMultiBulkReply()
+	// Subsequent keys are subtracted from the first (missing keys just don't subtract)
+	sets := make([]*set.Set, 1, len(keys))
+	sets[0] = firstSet
+	for i := 1; i < len(keys); i++ {
+		if setObj, exists := db.getAsSet(keys[i]); exists {
+			sets = append(sets, setObj)
+		}
 	}
 
 	result := sets[0]
@@ -427,7 +448,8 @@ func execSUnionStore(db *DB, args [][]byte) resp.Reply {
 	}
 
 	allKeys := append([]string{destKey}, srcKeys...)
-	sortedKeys := utils.SortedKeys(allKeys)
+	// 去重避免重复锁定同一键造成死锁（例如 SUNIONSTORE k k）
+	sortedKeys := utils.DedupSortedKeys(allKeys)
 	locks := make([]*KeyLockHandle, len(sortedKeys))
 	for i, key := range sortedKeys {
 		locks[i] = db.lockMgr.Lock(key)
@@ -479,7 +501,8 @@ func execSInterStore(db *DB, args [][]byte) resp.Reply {
 	}
 
 	allKeys := append([]string{destKey}, srcKeys...)
-	sortedKeys := utils.SortedKeys(allKeys)
+	// 去重避免重复锁定同一键造成死锁（例如 SINTERSTORE k k）
+	sortedKeys := utils.DedupSortedKeys(allKeys)
 	locks := make([]*KeyLockHandle, len(sortedKeys))
 	for i, key := range sortedKeys {
 		locks[i] = db.lockMgr.Lock(key)
@@ -535,7 +558,8 @@ func execSDiffStore(db *DB, args [][]byte) resp.Reply {
 	}
 
 	allKeys := append([]string{destKey}, srcKeys...)
-	sortedKeys := utils.SortedKeys(allKeys)
+	// 去重避免重复锁定同一键造成死锁（例如 SDIFFSTORE k k）
+	sortedKeys := utils.DedupSortedKeys(allKeys)
 	locks := make([]*KeyLockHandle, len(sortedKeys))
 	for i, key := range sortedKeys {
 		locks[i] = db.lockMgr.Lock(key)
@@ -546,17 +570,21 @@ func execSDiffStore(db *DB, args [][]byte) resp.Reply {
 		}
 	}()
 
-	sets := make([]*set.Set, 0)
-	for _, key := range srcKeys {
-		if setObj, exists := db.getAsSet(key); exists {
-			sets = append(sets, setObj)
-		}
-	}
-
-	if len(sets) == 0 {
+	// The first source key is the base set for diff - if it doesn't exist, result is empty
+	firstSet, exists := db.getAsSet(srcKeys[0])
+	if !exists {
 		db.Remove(destKey)
 		db.addAof(utils.ToCmdLineWithName("SDIFFSTORE", args...))
 		return reply.GetIntReply(0)
+	}
+
+	// Subsequent keys are subtracted from the first (missing keys just don't subtract)
+	sets := make([]*set.Set, 1, len(srcKeys))
+	sets[0] = firstSet
+	for i := 1; i < len(srcKeys); i++ {
+		if setObj, exists := db.getAsSet(srcKeys[i]); exists {
+			sets = append(sets, setObj)
+		}
 	}
 
 	result := sets[0]
@@ -609,13 +637,11 @@ func execSScan(db *DB, args [][]byte) resp.Reply {
 	})
 
 	// 构建返回结果: [cursor, [member1, member2, ...]]
-	arr := make([][]byte, 2+len(members)+1)
-	arr[0] = []byte(strconv.Itoa(nextCursor))
-	arr[1] = []byte("*") // 数组标记
+	membersBytes := make([][]byte, len(members))
 	for i, m := range members {
-		arr[2+i] = []byte(m)
+		membersBytes[i] = []byte(m)
 	}
-	return reply.GetMultiBulkReply(arr)
+	return reply.GetScanReply(int64(nextCursor), membersBytes)
 }
 
 // SENCODING key
