@@ -17,10 +17,17 @@ func execSAdd(db *DB, args [][]byte) resp.Reply {
 	}
 
 	key := string(args[0])
-	var added int
+	var (
+		added    int
+		errReply resp.Reply
+	)
 
 	db.WithKeyLock(key, func() {
 		setObj, _ := db.getOrCreateSet(key)
+		if setObj == nil {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		for i := 1; i < len(args); i++ {
 			if setObj.Add(string(args[i])) {
 				added++
@@ -29,6 +36,9 @@ func execSAdd(db *DB, args [][]byte) resp.Reply {
 		db.addAof(utils.ToCmdLineWithName("SADD", args...))
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	return reply.GetIntReply(int64(added))
 }
 
@@ -39,10 +49,17 @@ func execSRem(db *DB, args [][]byte) resp.Reply {
 	}
 
 	key := string(args[0])
-	var removed int
+	var (
+		removed  int
+		errReply resp.Reply
+	)
 
 	db.WithKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
@@ -57,6 +74,9 @@ func execSRem(db *DB, args [][]byte) resp.Reply {
 		db.addAof(utils.ToCmdLineWithName("SREM", args...))
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	return reply.GetIntReply(int64(removed))
 }
 
@@ -68,16 +88,26 @@ func execSIsMember(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 	member := string(args[1])
-	var exists bool
+	var (
+		exists   bool
+		errReply resp.Reply
+	)
 
 	db.WithRKeyLock(key, func() {
 		setObj, ok := db.getAsSet(key)
+		if isWrongTypeSet(setObj, ok) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !ok {
 			return
 		}
 		exists = setObj.Contains(member)
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	if exists {
 		return reply.GetIntReply(1)
 	}
@@ -91,16 +121,26 @@ func execSMembers(db *DB, args [][]byte) resp.Reply {
 	}
 
 	key := string(args[0])
-	var members []string
+	var (
+		members  []string
+		errReply resp.Reply
+	)
 
 	db.WithRKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
 		members = setObj.Members()
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	result := make([][]byte, len(members))
 	for i, m := range members {
 		result[i] = []byte(m)
@@ -115,16 +155,26 @@ func execSCard(db *DB, args [][]byte) resp.Reply {
 	}
 
 	key := string(args[0])
-	var count int
+	var (
+		count    int
+		errReply resp.Reply
+	)
 
 	db.WithRKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
 		count = setObj.Len()
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	return reply.GetIntReply(int64(count))
 }
 
@@ -144,10 +194,17 @@ func execSPop(db *DB, args [][]byte) resp.Reply {
 		count = int(c)
 	}
 
-	var members []string
+	var (
+		members  []string
+		errReply resp.Reply
+	)
 
 	db.WithKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
@@ -158,6 +215,9 @@ func execSPop(db *DB, args [][]byte) resp.Reply {
 		db.addAof(utils.ToCmdLineWithName("SPOP", args...))
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	if len(members) == 0 {
 		return reply.GetNullBulkReply()
 	}
@@ -188,10 +248,17 @@ func execSRandMember(db *DB, args [][]byte) resp.Reply {
 		}
 	}
 
-	var members []string
+	var (
+		members  []string
+		errReply resp.Reply
+	)
 
 	db.WithRKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
@@ -207,6 +274,9 @@ func execSRandMember(db *DB, args [][]byte) resp.Reply {
 		}
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	if len(members) == 0 {
 		if len(args) == 1 {
 			return reply.GetNullBulkReply()
@@ -241,6 +311,9 @@ func execSMove(db *DB, args [][]byte) resp.Reply {
 		defer db.lockMgr.Unlock(lock)
 
 		srcSet, exists := db.getAsSet(srcKey)
+		if isWrongTypeSet(srcSet, exists) {
+			return reply.GetWrongTypeErrReply()
+		}
 		if !exists {
 			return reply.GetIntReply(0)
 		}
@@ -266,6 +339,9 @@ func execSMove(db *DB, args [][]byte) resp.Reply {
 	defer db.lockMgr.Unlock(lock2)
 
 	srcSet, exists := db.getAsSet(srcKey)
+	if isWrongTypeSet(srcSet, exists) {
+		return reply.GetWrongTypeErrReply()
+	}
 	if !exists {
 		return reply.GetIntReply(0)
 	}
@@ -280,6 +356,9 @@ func execSMove(db *DB, args [][]byte) resp.Reply {
 	}
 
 	destSet, _ := db.getOrCreateSet(destKey)
+	if destSet == nil {
+		return reply.GetWrongTypeErrReply()
+	}
 	destSet.Add(member)
 
 	moved = true
@@ -316,6 +395,9 @@ func execSUnion(db *DB, args [][]byte) resp.Reply {
 	sets := make([]*set.Set, 0)
 	for _, key := range keys {
 		if setObj, exists := db.getAsSet(key); exists {
+			if setObj == nil {
+				return reply.GetWrongTypeErrReply()
+			}
 			sets = append(sets, setObj)
 		}
 	}
@@ -362,6 +444,9 @@ func execSInter(db *DB, args [][]byte) resp.Reply {
 	sets := make([]*set.Set, 0)
 	for _, key := range keys {
 		if setObj, exists := db.getAsSet(key); exists {
+			if setObj == nil {
+				return reply.GetWrongTypeErrReply()
+			}
 			sets = append(sets, setObj)
 		} else {
 			return reply.GetEmptyMultiBulkReply()
@@ -409,6 +494,9 @@ func execSDiff(db *DB, args [][]byte) resp.Reply {
 
 	// The first key is the base set for diff - if it doesn't exist, result is empty
 	firstSet, exists := db.getAsSet(keys[0])
+	if isWrongTypeSet(firstSet, exists) {
+		return reply.GetWrongTypeErrReply()
+	}
 	if !exists {
 		return reply.GetEmptyMultiBulkReply()
 	}
@@ -418,6 +506,9 @@ func execSDiff(db *DB, args [][]byte) resp.Reply {
 	sets[0] = firstSet
 	for i := 1; i < len(keys); i++ {
 		if setObj, exists := db.getAsSet(keys[i]); exists {
+			if setObj == nil {
+				return reply.GetWrongTypeErrReply()
+			}
 			sets = append(sets, setObj)
 		}
 	}
@@ -463,6 +554,9 @@ func execSUnionStore(db *DB, args [][]byte) resp.Reply {
 	sets := make([]*set.Set, 0)
 	for _, key := range srcKeys {
 		if setObj, exists := db.getAsSet(key); exists {
+			if setObj == nil {
+				return reply.GetWrongTypeErrReply()
+			}
 			sets = append(sets, setObj)
 		}
 	}
@@ -516,6 +610,9 @@ func execSInterStore(db *DB, args [][]byte) resp.Reply {
 	sets := make([]*set.Set, 0)
 	for _, key := range srcKeys {
 		if setObj, exists := db.getAsSet(key); exists {
+			if setObj == nil {
+				return reply.GetWrongTypeErrReply()
+			}
 			sets = append(sets, setObj)
 		} else {
 			db.Remove(destKey)
@@ -572,6 +669,9 @@ func execSDiffStore(db *DB, args [][]byte) resp.Reply {
 
 	// The first source key is the base set for diff - if it doesn't exist, result is empty
 	firstSet, exists := db.getAsSet(srcKeys[0])
+	if isWrongTypeSet(firstSet, exists) {
+		return reply.GetWrongTypeErrReply()
+	}
 	if !exists {
 		db.Remove(destKey)
 		db.addAof(utils.ToCmdLineWithName("SDIFFSTORE", args...))
@@ -583,6 +683,9 @@ func execSDiffStore(db *DB, args [][]byte) resp.Reply {
 	sets[0] = firstSet
 	for i := 1; i < len(srcKeys); i++ {
 		if setObj, exists := db.getAsSet(srcKeys[i]); exists {
+			if setObj == nil {
+				return reply.GetWrongTypeErrReply()
+			}
 			sets = append(sets, setObj)
 		}
 	}
@@ -625,16 +728,27 @@ func execSScan(db *DB, args [][]byte) resp.Reply {
 		}
 	}
 
-	var members []string
-	var nextCursor int
+	var (
+		members    []string
+		nextCursor int
+		errReply   resp.Reply
+	)
 
 	db.WithRKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
 		members, nextCursor = scanSet(setObj, cursor, matchPattern, count)
 	})
+
+	if errReply != nil {
+		return errReply
+	}
 
 	// 构建返回结果: [cursor, [member1, member2, ...]]
 	membersBytes := make([][]byte, len(members))
@@ -651,10 +765,17 @@ func execSEncoding(db *DB, args [][]byte) resp.Reply {
 	}
 
 	key := string(args[0])
-	var encoding string
+	var (
+		encoding string
+		errReply resp.Reply
+	)
 
 	db.WithRKeyLock(key, func() {
 		setObj, exists := db.getAsSet(key)
+		if isWrongTypeSet(setObj, exists) {
+			errReply = reply.GetWrongTypeErrReply()
+			return
+		}
 		if !exists {
 			return
 		}
@@ -666,6 +787,9 @@ func execSEncoding(db *DB, args [][]byte) resp.Reply {
 		}
 	})
 
+	if errReply != nil {
+		return errReply
+	}
 	if encoding == "" {
 		return reply.GetNullBulkReply()
 	}
@@ -684,6 +808,10 @@ func (db *DB) getAsSet(key string) (*set.Set, bool) {
 		return nil, true
 	}
 	return setObj, true
+}
+
+func isWrongTypeSet(setObj *set.Set, exists bool) bool {
+	return exists && setObj == nil
 }
 
 // getOrCreateSet
