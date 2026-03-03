@@ -24,7 +24,7 @@ func NewClusterDatabase(db database.Database) *ClusterDatabase {
 	cluster := &ClusterDatabase{
 		self:       config.Properties.Self,
 		db:         db,
-		peerPicker: consistent_hash.NewNodeMap(nil),
+		peerPicker: consistent_hash.NewNodeMap(config.Properties.VirtualNodes, nil),
 	}
 
 	nodes := make([]string, 0, len(config.Properties.Peers)+1)

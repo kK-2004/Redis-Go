@@ -21,6 +21,7 @@ type ServerProperties struct {
 	Peers              []string `cfg:"peers"`
 	Self               string   `cfg:"self"`
 	UseCluster         bool     `cfg:"useCluster"`
+	VirtualNodes       int      `cfg:"virtualNodes"`
 }
 
 var Properties *ServerProperties
@@ -31,6 +32,7 @@ func init() {
 		Port:               6666,
 		AppendOnly:         false,
 		AppendOnlyFilename: "dump.aof",
+		VirtualNodes:       100,
 	}
 }
 
@@ -45,6 +47,9 @@ func SetupConfig(configFileName string) {
 		}
 	}(file)
 	Properties = parse(file)
+	if Properties.VirtualNodes <= 0 {
+		Properties.VirtualNodes = 100
+	}
 
 	// If self is not specified in config file, auto-generate from bind:port
 	if Properties.Self == "" {

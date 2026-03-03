@@ -1,20 +1,32 @@
 package consistent_hash
 
 import (
+	"fmt"
 	"hash/crc32"
 	"sort"
+	"strings"
 )
 
-type NodeMap struct {
-	hashFunc    func(data []byte) uint32
-	nodeHashs   []int
-	nodeHashMap map[int]string
+const defaultReplicas = 100
+
+type ringEntry struct {
+	hash int
+	node string
 }
 
-func NewNodeMap(hashFunc func(data []byte) uint32) *NodeMap {
+type NodeMap struct {
+	hashFunc func(data []byte) uint32
+	replicas int
+	ring     []ringEntry
+}
+
+func NewNodeMap(replicas int, hashFunc func(data []byte) uint32) *NodeMap {
+	if replicas <= 0 {
+		replicas = defaultReplicas
+	}
 	m := &NodeMap{
-		hashFunc:    hashFunc,
-		nodeHashMap: make(map[int]string),
+		hashFunc: hashFunc,
+		replicas: replicas,
 	}
 	if m.hashFunc == nil {
 		m.hashFunc = crc32.ChecksumIEEE
@@ -23,19 +35,30 @@ func NewNodeMap(hashFunc func(data []byte) uint32) *NodeMap {
 }
 
 func (m *NodeMap) IsEmpty() bool {
-	return len(m.nodeHashMap) == 0
+	return len(m.ring) == 0
 }
 
 func (m *NodeMap) AddNode(nodes ...string) {
 	for _, node := range nodes {
-		if node == " " {
+		node = strings.TrimSpace(node)
+		if node == "" {
 			continue
 		}
-		hash := int(m.hashFunc([]byte(node)))
-		m.nodeHashs = append(m.nodeHashs, hash)
-		m.nodeHashMap[hash] = node
+		for i := 0; i < m.replicas; i++ {
+			virtualNode := fmt.Sprintf("%s#%d", node, i)
+			hash := int(m.hashFunc([]byte(virtualNode)))
+			m.ring = append(m.ring, ringEntry{
+				hash: hash,
+				node: node,
+			})
+		}
 	}
-	sort.Ints(m.nodeHashs)
+	sort.Slice(m.ring, func(i, j int) bool {
+		if m.ring[i].hash == m.ring[j].hash {
+			return m.ring[i].node < m.ring[j].node
+		}
+		return m.ring[i].hash < m.ring[j].hash
+	})
 }
 
 func (m *NodeMap) PickNode(key string) string {
@@ -43,27 +66,11 @@ func (m *NodeMap) PickNode(key string) string {
 		return ""
 	}
 	hash := int(m.hashFunc([]byte(key)))
-	tarHash := binarySearch(m.nodeHashs, hash)
-	// 如果给定键值大于所有节点hash值，则返回第一个节点
-	if tarHash == len(m.nodeHashs)-1 {
-		tarHash = 0
+	idx := sort.Search(len(m.ring), func(i int) bool {
+		return m.ring[i].hash >= hash
+	})
+	if idx == len(m.ring) {
+		idx = 0
 	}
-	return m.nodeHashMap[m.nodeHashs[tarHash]]
-}
-
-/*
- * 二分查找，返回大于等于目标值的第一个索引
- */
-func binarySearch(arr []int, target int) int {
-	l := 0
-	r := len(arr) - 1
-	for l < r {
-		mid := (l + r) >> 1
-		if arr[mid] < target {
-			l = mid + 1
-		} else {
-			r = mid
-		}
-	}
-	return l
+	return m.ring[idx].node
 }
