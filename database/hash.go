@@ -35,6 +35,11 @@ func execHGet(db *DB, args [][]byte) resp.Reply {
 			result = reply.GetNullBulkReply()
 			return
 		}
+		if hashObj == nil {
+			// Key exists but is not a hash
+			result = reply.GetStandardErrorReply("WRONGTYPE Operation against a key holding the wrong kind of value")
+			return
+		}
 
 		value, exists := hashObj.Get(field)
 		if !exists {
