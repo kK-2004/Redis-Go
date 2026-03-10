@@ -43,3 +43,13 @@ docs/
 
 *.conf
 !redis.example.conf
+
+# OpenSpec change management
+openspec/
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# Redis server binary
+redis-server
