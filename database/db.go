@@ -7,6 +7,9 @@ import (
 	"Redis_Go/interface/database"
 	"Redis_Go/interface/resp"
 	"Redis_Go/resp/reply"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -38,6 +41,20 @@ type ExecFunc func(db *DB, args [][]byte) resp.Reply
 type CmdLine = [][]byte
 
 func (db *DB) Exec(c resp.Connection, cmdLine CmdLine) resp.Reply {
+	cmdName := strings.ToLower(string((cmdLine[0])))
+	cmd, ok := cmdTable[cmdName]
+	if !ok {
+		return reply.GetStandardErrorReply("ERR unknown command '" + cmdName + "'")
+	}
+	if !validateArgCnt(cmd.argCnt, cmdLine) {
+		return reply.GetArgNumErrReply(cmdName)
+	}
+	return cmd.exec(db, cmdLine[1:])
+}
+
+// ExecWithoutLock 执行命令但不获取键级锁（用于 Lua 脚本内部调用）
+// 注意：调用方必须确保已持有相关键的锁
+func (db *DB) ExecWithoutLock(cmdLine CmdLine) resp.Reply {
 	cmdName := strings.ToLower(string((cmdLine[0])))
 	cmd, ok := cmdTable[cmdName]
 	if !ok {
@@ -175,13 +192,24 @@ type KeyLockManager struct {
 
 type keyLockEntry struct {
 	lock            sync.RWMutex
+	metaMu          sync.Mutex
 	refCount        int  // 正在等待或持有锁的 goroutine 数量
 	pendingDeletion bool // 标记是否待删除
+	// Reentrant lock support
+	writeOwner     int64         // 当前写锁持有者的唯一标识
+	writeRecursion int           // 写锁递归计数
+	readOwners     map[int64]int // 读锁持有者及其重入计数
 }
 
 type KeyLockHandle struct {
 	key   string
 	entry *keyLockEntry
+}
+
+// MultiKeyLockHandle 批量锁句柄，用于 Lua 脚本原子执行
+type MultiKeyLockHandle struct {
+	keys    []string
+	entries []*keyLockEntry
 }
 
 func NewKeyLockManager() *KeyLockManager {
@@ -219,36 +247,219 @@ func (klm *KeyLockManager) releaseEntry(key string, entry *keyLockEntry) {
 	}
 }
 
-// Lock 获取指定 key 的写锁
+// goID 获取当前 goroutine 的唯一标识
+func goID() int64 {
+	// 使用 runtime.Stack 获取 goroutine ID
+	// 这是一个常用的技巧，虽然不是官方推荐的
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	payload := buf[:n]
+
+	// 提取 "goroutine 12345" 中的数字
+	// 格式: "goroutine 12345 [running]:" 或类似
+	// 找到 "goroutine " 后面的数字
+	str := string(payload)
+	// 跳过 "goroutine " 前缀
+	start := 9
+	if len(str) < start {
+		return 0
+	}
+	// 找到数字结束位置（空格）
+	end := start
+	for end < len(str) && str[end] >= '0' && str[end] <= '9' {
+		end++
+	}
+	id, _ := strconv.ParseInt(str[start:end], 10, 64)
+	return id
+}
+
+// Lock 获取指定 key 的写锁（支持重入）
 func (klm *KeyLockManager) Lock(key string) *KeyLockHandle {
 	entry := klm.acquireEntry(key)
+
+	gid := goID()
+
+	// 检查是否是同一个 goroutine 重入
+	entry.metaMu.Lock()
+	if entry.writeOwner == gid {
+		entry.writeRecursion++
+		entry.metaMu.Unlock()
+		return &KeyLockHandle{key: key, entry: entry}
+	}
+	entry.metaMu.Unlock()
+
+	// 第一次获取锁，需要等待
 	entry.lock.Lock()
+	entry.metaMu.Lock()
+	entry.writeOwner = gid
+	entry.writeRecursion = 1
+	entry.metaMu.Unlock()
+
 	return &KeyLockHandle{key: key, entry: entry}
 }
 
-// Unlock 释放写锁
+// Unlock 释放写锁（支持重入）
 func (klm *KeyLockManager) Unlock(handle *KeyLockHandle) {
 	if handle == nil || handle.entry == nil {
 		return
 	}
-	handle.entry.lock.Unlock()
-	klm.releaseEntry(handle.key, handle.entry)
+
+	entry := handle.entry
+	gid := goID()
+
+	// 检查是否是锁的持有者
+	entry.metaMu.Lock()
+	if entry.writeOwner != gid {
+		// 不是持有者，直接返回（避免错误释放）
+		entry.metaMu.Unlock()
+		return
+	}
+
+	// 减少递归计数
+	entry.writeRecursion--
+	if entry.writeRecursion > 0 {
+		// 还有其他重入，不释放底层锁
+		entry.metaMu.Unlock()
+		klm.releaseEntry(handle.key, entry)
+		return
+	}
+
+	// 递归计数为0，释放底层锁
+	entry.writeOwner = 0
+	entry.metaMu.Unlock()
+	entry.lock.Unlock()
+	klm.releaseEntry(handle.key, entry)
 }
 
-// RLock 获取指定 key 的读锁
+// RLock 获取指定 key 的读锁（支持重入）
 func (klm *KeyLockManager) RLock(key string) *KeyLockHandle {
 	entry := klm.acquireEntry(key)
+
+	gid := goID()
+
+	// 检查是否是同一个 goroutine 重入（读锁可以重入）
+	entry.metaMu.Lock()
+	if entry.readOwners != nil && entry.readOwners[gid] > 0 {
+		entry.readOwners[gid]++
+		entry.metaMu.Unlock()
+		return &KeyLockHandle{key: key, entry: entry}
+	}
+
+	// 检查是否已经持有写锁（写锁可以降级为读锁）
+	if entry.writeOwner == gid {
+		// 已经持有写锁，允许读操作
+		// 创建一个虚拟的读锁句柄，不需要实际调用 RLock
+		if entry.readOwners == nil {
+			entry.readOwners = make(map[int64]int)
+		}
+		entry.readOwners[gid] = 1
+		entry.metaMu.Unlock()
+		return &KeyLockHandle{key: key, entry: entry}
+	}
+	entry.metaMu.Unlock()
+
+	// 第一次获取锁，需要等待
 	entry.lock.RLock()
+	entry.metaMu.Lock()
+	if entry.readOwners == nil {
+		entry.readOwners = make(map[int64]int)
+	}
+	entry.readOwners[gid] = 1
+	entry.metaMu.Unlock()
+
 	return &KeyLockHandle{key: key, entry: entry}
 }
 
-// RUnlock 释放读锁
+// RUnlock 释放读锁（支持重入）
 func (klm *KeyLockManager) RUnlock(handle *KeyLockHandle) {
 	if handle == nil || handle.entry == nil {
 		return
 	}
-	handle.entry.lock.RUnlock()
-	klm.releaseEntry(handle.key, handle.entry)
+
+	entry := handle.entry
+	gid := goID()
+
+	// 检查是否是锁的持有者
+	entry.metaMu.Lock()
+	readRecursion, ok := entry.readOwners[gid]
+	if !ok || readRecursion == 0 {
+		// 不是持有者，直接返回
+		entry.metaMu.Unlock()
+		return
+	}
+
+	// 减少递归计数
+	readRecursion--
+	if readRecursion > 0 {
+		entry.readOwners[gid] = readRecursion
+		entry.metaMu.Unlock()
+		// 还有其他重入，不释放底层锁
+		klm.releaseEntry(handle.key, entry)
+		return
+	}
+	delete(entry.readOwners, gid)
+
+	// 递归计数为0，检查是否真的持有底层读锁
+	// 如果还持有写锁，说明这是写锁降级的情况，不需要调用 RUnlock
+	shouldRelease := (entry.writeOwner != gid)
+	entry.metaMu.Unlock()
+
+	if shouldRelease {
+		// 真正的读锁，需要释放底层锁
+		entry.lock.RUnlock()
+	}
+	klm.releaseEntry(handle.key, entry)
+}
+
+// LockKeys 批量获取多个键的写锁，按字典序锁定以避免死锁
+// 如果 keys 为空，返回 nil
+func (klm *KeyLockManager) LockKeys(keys []string) *MultiKeyLockHandle {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// 去重并排序
+	uniqueKeys := make([]string, 0, len(keys))
+	seen := make(map[string]bool)
+	for _, k := range keys {
+		if !seen[k] {
+			seen[k] = true
+			uniqueKeys = append(uniqueKeys, k)
+		}
+	}
+	sort.Strings(uniqueKeys)
+
+	// 按顺序获取所有锁
+	entries := make([]*keyLockEntry, len(uniqueKeys))
+	for i, key := range uniqueKeys {
+		entries[i] = klm.acquireEntry(key)
+		entries[i].lock.Lock()
+		entries[i].metaMu.Lock()
+		entries[i].writeOwner = goID()
+		entries[i].writeRecursion = 1
+		entries[i].metaMu.Unlock()
+	}
+
+	return &MultiKeyLockHandle{
+		keys:    uniqueKeys,
+		entries: entries,
+	}
+}
+
+// UnlockKeys 释放批量锁
+func (klm *KeyLockManager) UnlockKeys(handle *MultiKeyLockHandle) {
+	if handle == nil {
+		return
+	}
+	// 按逆序释放锁
+	for i := len(handle.entries) - 1; i >= 0; i-- {
+		handle.entries[i].metaMu.Lock()
+		handle.entries[i].writeOwner = 0
+		handle.entries[i].writeRecursion = 0
+		handle.entries[i].metaMu.Unlock()
+		handle.entries[i].lock.Unlock()
+		klm.releaseEntry(handle.keys[i], handle.entries[i])
+	}
 }
 
 // RemoveLock 标记删除指定 key 的锁（在 key 被删除后调用）

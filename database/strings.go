@@ -5,6 +5,7 @@ import (
 	"Redis_Go/interface/resp"
 	"Redis_Go/lib/utils"
 	"Redis_Go/resp/reply"
+	"strconv"
 )
 
 // execGet retrieves the value associated with the specified key from the database.
@@ -63,6 +64,39 @@ func execStrLen(db *DB, args [][]byte) resp.Reply {
 	return reply.GetIntReply(int64(len(entity.Data.([]byte))))
 }
 
+// execIncrBy increments the stored value by the specified amount
+func execIncrBy(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	increment := string(args[1])
+
+	delta, err := strconv.ParseInt(increment, 10, 64)
+	if err != nil {
+		return reply.GetStandardErrorReply("ERR value is not an integer or out of range")
+	}
+
+	entity, ok := db.GetEntity(key)
+	var oldValue int64
+	if ok {
+		if oldStr, ok := entity.Data.([]byte); ok {
+			oldValue, err = strconv.ParseInt(string(oldStr), 10, 64)
+			if err != nil {
+				return reply.GetStandardErrorReply("ERR value is not an integer or out of range")
+			}
+		}
+	}
+
+	newValue := oldValue + delta
+	newValueStr := strconv.FormatInt(newValue, 10)
+	db.PutEntity(key, &database.DataEntity{Data: []byte(newValueStr)})
+	db.addAof(utils.ToCmdLineWithName("INCRBY", args...))
+	return reply.GetIntReply(newValue)
+}
+
+// execIncr increments the stored value by 1
+func execIncr(db *DB, args [][]byte) resp.Reply {
+	return execIncrBy(db, [][]byte{args[0], []byte("1")})
+}
+
 func init() {
 	RegisterCommand("GET", execGet, 2)
 	RegisterCommand("SET", execSet, 3)
@@ -70,4 +104,6 @@ func init() {
 	RegisterCommand("GETSET", execGetSet, 3)
 	RegisterCommand("SETEX", execSet, 4)
 	RegisterCommand("STRLEN", execStrLen, 2)
+	RegisterCommand("INCR", execIncr, 2)
+	RegisterCommand("INCRBY", execIncrBy, 3)
 }

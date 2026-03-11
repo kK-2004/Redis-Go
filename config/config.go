@@ -22,6 +22,7 @@ type ServerProperties struct {
 	Self               string   `cfg:"self"`
 	UseCluster         bool     `cfg:"useCluster"`
 	VirtualNodes       int      `cfg:"virtualNodes"`
+	ScriptDir          string   `cfg:"scriptDir"`
 }
 
 var Properties *ServerProperties
