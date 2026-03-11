@@ -25,6 +25,18 @@ func NewLuaEngine(db *DB) *LuaEngine {
 	}
 }
 
+// WithDB 返回绑定到指定 DB 的 LuaEngine 视图，复用脚本缓存和 VM 池
+func (e *LuaEngine) WithDB(db *DB) *LuaEngine {
+	if db == nil {
+		return e
+	}
+	return &LuaEngine{
+		db:          db,
+		vmPool:      e.vmPool,
+		scriptCache: e.scriptCache,
+	}
+}
+
 // Eval 执行Lua脚本
 func (e *LuaEngine) Eval(script string, keys, args []string) resp.Reply {
 	// 编译或获取缓存的脚本

@@ -192,13 +192,13 @@ type KeyLockManager struct {
 
 type keyLockEntry struct {
 	lock            sync.RWMutex
+	metaMu          sync.Mutex
 	refCount        int  // 正在等待或持有锁的 goroutine 数量
 	pendingDeletion bool // 标记是否待删除
 	// Reentrant lock support
-	writeOwner      int64  // 当前写锁持有者的唯一标识
-	writeRecursion  int    // 写锁递归计数
-	readOwner       int64  // 当前读锁持有者的唯一标识
-	readRecursion   int    // 读锁递归计数
+	writeOwner     int64         // 当前写锁持有者的唯一标识
+	writeRecursion int           // 写锁递归计数
+	readOwners     map[int64]int // 读锁持有者及其重入计数
 }
 
 type KeyLockHandle struct {
@@ -280,15 +280,20 @@ func (klm *KeyLockManager) Lock(key string) *KeyLockHandle {
 	gid := goID()
 
 	// 检查是否是同一个 goroutine 重入
+	entry.metaMu.Lock()
 	if entry.writeOwner == gid {
 		entry.writeRecursion++
+		entry.metaMu.Unlock()
 		return &KeyLockHandle{key: key, entry: entry}
 	}
+	entry.metaMu.Unlock()
 
 	// 第一次获取锁，需要等待
 	entry.lock.Lock()
+	entry.metaMu.Lock()
 	entry.writeOwner = gid
 	entry.writeRecursion = 1
+	entry.metaMu.Unlock()
 
 	return &KeyLockHandle{key: key, entry: entry}
 }
@@ -303,8 +308,10 @@ func (klm *KeyLockManager) Unlock(handle *KeyLockHandle) {
 	gid := goID()
 
 	// 检查是否是锁的持有者
+	entry.metaMu.Lock()
 	if entry.writeOwner != gid {
 		// 不是持有者，直接返回（避免错误释放）
+		entry.metaMu.Unlock()
 		return
 	}
 
@@ -312,12 +319,14 @@ func (klm *KeyLockManager) Unlock(handle *KeyLockHandle) {
 	entry.writeRecursion--
 	if entry.writeRecursion > 0 {
 		// 还有其他重入，不释放底层锁
+		entry.metaMu.Unlock()
 		klm.releaseEntry(handle.key, entry)
 		return
 	}
 
 	// 递归计数为0，释放底层锁
 	entry.writeOwner = 0
+	entry.metaMu.Unlock()
 	entry.lock.Unlock()
 	klm.releaseEntry(handle.key, entry)
 }
@@ -329,8 +338,10 @@ func (klm *KeyLockManager) RLock(key string) *KeyLockHandle {
 	gid := goID()
 
 	// 检查是否是同一个 goroutine 重入（读锁可以重入）
-	if entry.readOwner == gid {
-		entry.readRecursion++
+	entry.metaMu.Lock()
+	if entry.readOwners != nil && entry.readOwners[gid] > 0 {
+		entry.readOwners[gid]++
+		entry.metaMu.Unlock()
 		return &KeyLockHandle{key: key, entry: entry}
 	}
 
@@ -338,15 +349,23 @@ func (klm *KeyLockManager) RLock(key string) *KeyLockHandle {
 	if entry.writeOwner == gid {
 		// 已经持有写锁，允许读操作
 		// 创建一个虚拟的读锁句柄，不需要实际调用 RLock
-		entry.readOwner = gid
-		entry.readRecursion = 1
+		if entry.readOwners == nil {
+			entry.readOwners = make(map[int64]int)
+		}
+		entry.readOwners[gid] = 1
+		entry.metaMu.Unlock()
 		return &KeyLockHandle{key: key, entry: entry}
 	}
+	entry.metaMu.Unlock()
 
 	// 第一次获取锁，需要等待
 	entry.lock.RLock()
-	entry.readOwner = gid
-	entry.readRecursion = 1
+	entry.metaMu.Lock()
+	if entry.readOwners == nil {
+		entry.readOwners = make(map[int64]int)
+	}
+	entry.readOwners[gid] = 1
+	entry.metaMu.Unlock()
 
 	return &KeyLockHandle{key: key, entry: entry}
 }
@@ -361,25 +380,29 @@ func (klm *KeyLockManager) RUnlock(handle *KeyLockHandle) {
 	gid := goID()
 
 	// 检查是否是锁的持有者
-	if entry.readOwner != gid {
+	entry.metaMu.Lock()
+	readRecursion, ok := entry.readOwners[gid]
+	if !ok || readRecursion == 0 {
 		// 不是持有者，直接返回
+		entry.metaMu.Unlock()
 		return
 	}
 
 	// 减少递归计数
-	entry.readRecursion--
-	if entry.readRecursion > 0 {
+	readRecursion--
+	if readRecursion > 0 {
+		entry.readOwners[gid] = readRecursion
+		entry.metaMu.Unlock()
 		// 还有其他重入，不释放底层锁
 		klm.releaseEntry(handle.key, entry)
 		return
 	}
+	delete(entry.readOwners, gid)
 
 	// 递归计数为0，检查是否真的持有底层读锁
 	// 如果还持有写锁，说明这是写锁降级的情况，不需要调用 RUnlock
 	shouldRelease := (entry.writeOwner != gid)
-
-	// 清除读锁所有者
-	entry.readOwner = 0
+	entry.metaMu.Unlock()
 
 	if shouldRelease {
 		// 真正的读锁，需要释放底层锁
@@ -411,6 +434,10 @@ func (klm *KeyLockManager) LockKeys(keys []string) *MultiKeyLockHandle {
 	for i, key := range uniqueKeys {
 		entries[i] = klm.acquireEntry(key)
 		entries[i].lock.Lock()
+		entries[i].metaMu.Lock()
+		entries[i].writeOwner = goID()
+		entries[i].writeRecursion = 1
+		entries[i].metaMu.Unlock()
 	}
 
 	return &MultiKeyLockHandle{
@@ -426,6 +453,10 @@ func (klm *KeyLockManager) UnlockKeys(handle *MultiKeyLockHandle) {
 	}
 	// 按逆序释放锁
 	for i := len(handle.entries) - 1; i >= 0; i-- {
+		handle.entries[i].metaMu.Lock()
+		handle.entries[i].writeOwner = 0
+		handle.entries[i].writeRecursion = 0
+		handle.entries[i].metaMu.Unlock()
 		handle.entries[i].lock.Unlock()
 		klm.releaseEntry(handle.keys[i], handle.entries[i])
 	}

@@ -32,6 +32,7 @@ func execEval(db *DB, args [][]byte) resp.Reply {
 	if globalLuaEngine == nil {
 		return reply.GetStandardErrorReply("ERR Lua engine not initialized")
 	}
+	engine := globalLuaEngine.WithDB(db)
 
 	// 至少需要 script 和 numkeys
 	if len(args) < 2 {
@@ -68,7 +69,7 @@ func execEval(db *DB, args [][]byte) resp.Reply {
 		luaArgs[i] = string(args[2+numKeys+i])
 	}
 
-	return globalLuaEngine.Eval(script, keys, luaArgs)
+	return engine.Eval(script, keys, luaArgs)
 }
 
 // execEvalSHA 执行 EVALSHA 命令
@@ -77,6 +78,7 @@ func execEvalSHA(db *DB, args [][]byte) resp.Reply {
 	if globalLuaEngine == nil {
 		return reply.GetStandardErrorReply("ERR Lua engine not initialized")
 	}
+	engine := globalLuaEngine.WithDB(db)
 
 	// 至少需要 sha1 和 numkeys
 	if len(args) < 2 {
@@ -113,7 +115,7 @@ func execEvalSHA(db *DB, args [][]byte) resp.Reply {
 		luaArgs[i] = string(args[2+numKeys+i])
 	}
 
-	return globalLuaEngine.EvalBySHA(sha1Hash, keys, luaArgs)
+	return engine.EvalBySHA(sha1Hash, keys, luaArgs)
 }
 
 // execScript 执行 SCRIPT 命令
